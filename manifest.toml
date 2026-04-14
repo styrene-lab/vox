@@ -1,0 +1,17 @@
+[extension]
+name = "vox"
+version = "0.1.0"
+description = "Unified communication connector for omegon — aggregates email, Signal, Telegram, Slack, Discord, Styrene, Reticulum, and more"
+sdk_version = "0.15"
+
+[runtime]
+type = "native"
+binary = "target/release/vox"
+
+[startup]
+ping_method = "get_tools"
+timeout_ms = 5000
+
+[mind]
+enabled = true
+description = "Communication patterns, contact context, and channel preferences"
