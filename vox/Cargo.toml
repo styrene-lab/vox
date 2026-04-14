@@ -8,10 +8,36 @@ description = "Omegon communication connector extension"
 name = "vox"
 path = "src/main.rs"
 
+[features]
+default = []
+signal = ["dep:vox-signal"]
+email = ["dep:vox-email"]
+lxmf = ["dep:vox-lxmf"]
+voice = ["dep:vox-voice"]
+slack = ["dep:vox-slack"]
+discord = ["dep:vox-discord"]
+all = ["signal", "email", "lxmf", "voice", "slack", "discord"]
+
 [dependencies]
 vox-core = { path = "../vox-core" }
-omegon-extension = { path = "../../omegon/core/crates/omegon-extension" }
+omegon-extension = { path = "../../../omegon/core/crates/omegon-extension" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+reqwest = { version = "0.12", features = ["json"] }
+clap = { version = "4", features = ["derive", "env"] }
+uuid = { version = "1", features = ["v4"] }
+tokio-util = "0.7"
+
+# Feature-gated connector crates — only linked when enabled.
+# Interactive omegon users never pull these; only daemon/OCI builds opt in.
+vox-signal = { path = "../vox-signal", optional = true }
+vox-email = { path = "../vox-email", optional = true }
+vox-lxmf = { path = "../vox-lxmf", optional = true }
+vox-voice = { path = "../vox-voice", optional = true }
+vox-slack = { path = "../vox-slack", optional = true }
+vox-discord = { path = "../vox-discord", optional = true }

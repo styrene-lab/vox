@@ -1,0 +1,32 @@
+# systemd user service for vox bridge mode
+# Install: cp vox-bridge.service ~/.config/systemd/user/
+# Enable:  systemctl --user enable --now vox-bridge
+#
+# Requires:
+#   - vox binary at ~/.local/bin/vox
+#   - VOX_DISCORD_BOT_TOKEN in environment file
+#   - omegon daemon already running on port 7842
+
+[Unit]
+Description=Vox communication bridge for omegon
+After=network.target
+# If omegon daemon is also a systemd service:
+# After=omegon-daemon.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/vox --bridge --daemon-url http://127.0.0.1:7842 --poll-ms 500
+Restart=always
+RestartSec=5
+
+# Secrets via environment file (never inline in unit)
+EnvironmentFile=%h/.config/vox/secrets.env
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/vox
+
+[Install]
+WantedBy=default.target

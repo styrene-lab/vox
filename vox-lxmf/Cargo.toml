@@ -1,0 +1,19 @@
+[package]
+name = "vox-lxmf"
+version = "0.1.0"
+edition = "2021"
+description = "LXMF/Reticulum connector for vox — built on styrene-rs"
+
+[dependencies]
+vox-core = { path = "../vox-core" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+
+# Styrene mesh stack — Rust-native LXMF and RNS
+styrene-lxmf = { path = "../../styrene-rs/crates/libs/styrene-lxmf", features = ["sdk"] }
+styrene-rns = { path = "../../styrene-rs/crates/libs/styrene-rns" }
+styrene-mesh = { path = "../../styrene-rs/crates/libs/styrene-mesh" }
+styrene-identity = { path = "../../styrene-rs/crates/libs/styrene-identity" }

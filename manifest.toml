@@ -10,8 +10,31 @@ binary = "target/release/vox"
 
 [startup]
 ping_method = "get_tools"
-timeout_ms = 5000
+timeout_ms = 10000
 
 [mind]
 enabled = true
 description = "Communication patterns, contact context, and channel preferences"
+
+# Secrets follow omegon's security model:
+#   - Resolved by SecretsManager (keyring, vault, env, shell commands)
+#   - Delivered via bootstrap_secrets RPC over stdio pipe
+#   - Never passed as environment variables to the subprocess
+#   - Stored in-memory with secrecy::SecretString (zeroized on drop)
+#   - Never persisted to disk by vox
+#
+# All secrets are optional because which connectors are active depends
+# on the runtime config (vox.toml). A connector whose secrets are missing
+# starts in Degraded or Disconnected state rather than failing the
+# entire extension.
+[secrets]
+required = []
+optional = [
+    "VOX_SIGNAL_PASSWORD",
+    "VOX_EMAIL_PASSWORD",
+    "VOX_SLACK_BOT_TOKEN",
+    "VOX_SLACK_APP_TOKEN",
+    "VOX_DISCORD_BOT_TOKEN",
+    "VOX_MATRIX_PASSWORD",
+    "VOX_LXMF_IDENTITY",
+]

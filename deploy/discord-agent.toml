@@ -1,0 +1,8 @@
+# Vox config for Discord-connected deployment
+# Copy to ~/.config/vox/vox.toml
+#
+# Vox provides the communication layer. Omegon provides the agent brain.
+# Run: omegon serve (with vox extension loaded)
+
+[discord]
+# guild_id = "YOUR_SERVER_ID"   # optional — omit to respond in all servers

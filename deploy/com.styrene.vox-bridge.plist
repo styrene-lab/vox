@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.styrene.vox-bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/cwilson/.local/bin/vox</string>
+        <string>--bridge</string>
+        <string>--daemon-url</string>
+        <string>http://127.0.0.1:7842</string>
+        <string>--poll-ms</string>
+        <string>500</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Set your token here or use a secrets manager -->
+        <key>VOX_DISCORD_BOT_TOKEN</key>
+        <string>REPLACE_ME</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/vox-bridge.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/vox-bridge.stderr.log</string>
+</dict>
+</plist>

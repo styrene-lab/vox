@@ -1,0 +1,70 @@
+# Vox configuration — only uncomment sections for connectors you want active.
+# Secrets (passwords, tokens) are NEVER stored here. They are delivered
+# via omegon's bootstrap_secrets RPC, resolved from keyring/vault/env by
+# omegon's SecretsManager. Configure them with:
+#   omegon secret set VOX_EMAIL_PASSWORD
+
+# --- Signal ---
+# Requires: VOX_SIGNAL_PASSWORD (optional, for registration)
+# Feature flag: --features signal
+#
+# [signal]
+# data_dir = "/var/lib/vox/signal"
+# phone_number = "+15551234567"
+
+# --- Email (IMAP/SMTP) ---
+# Requires: VOX_EMAIL_PASSWORD
+# Feature flag: --features email
+#
+# [email]
+# imap_host = "imap.example.com"
+# imap_port = 993
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# address = "omegon@example.com"
+# username = "omegon@example.com"   # defaults to address if omitted
+
+# --- LXMF / Reticulum (mesh network) ---
+# Requires: VOX_LXMF_IDENTITY (optional, auto-generated if absent)
+# Feature flag: --features lxmf
+# Fully airgap-compatible — no internet required.
+#
+# [lxmf]
+# rns_config_dir = "~/.reticulum"
+# display_name = "omegon-lab"
+# styrened_socket = "/run/styrened/rpc.sock"   # optional, for delegated mode
+
+# --- Voice (STT/TTS) ---
+# Requires: no secrets — all local models.
+# Feature flag: --features voice
+# Fully airgap-compatible — no internet required.
+#
+# [voice]
+# stt_engine = "whisper"               # or "vosk"
+# stt_model_path = "/var/lib/vox/models/whisper-base.en"
+# tts_engine = "piper"                 # or "sherpa-onnx"
+# tts_model_path = "/var/lib/vox/models/piper-en-us"
+# input_device = "default"             # audio input (omit for system default)
+# output_device = "default"            # audio output (omit for system default)
+
+# --- Matrix ---
+# Requires: VOX_MATRIX_PASSWORD
+# Feature flag: (not yet implemented)
+#
+# [matrix]
+# homeserver = "https://matrix.example.com"
+# user_id = "@bot:example.com"
+
+# --- Slack ---
+# Requires: VOX_SLACK_BOT_TOKEN
+# Feature flag: (not yet implemented)
+#
+# [slack]
+# workspace = "my-workspace"
+
+# --- Discord ---
+# Requires: VOX_DISCORD_BOT_TOKEN
+# Feature flag: --features discord
+#
+# [discord]
+# guild_id = "123456789"               # optional, omit for all guilds

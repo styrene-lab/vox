@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::RwLock;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_core::Stream;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -88,7 +90,7 @@ pub enum Envelope {
 
 /// A single part of a message body. Messages carry a `Vec<BodyPart>` to
 /// support multipart content (e.g. email: text + html + attachments).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BodyPart {
     /// Plain text content.
@@ -107,7 +109,7 @@ pub enum BodyPart {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RichFormat {
     Html,
@@ -342,12 +344,14 @@ impl ConnectorRegistry {
 fn futures_core_select_all<'a>(
     streams: Vec<Pin<Box<dyn Stream<Item = InboundMessage> + Send + 'a>>>,
 ) -> impl Stream<Item = InboundMessage> + Send + 'a {
-    SelectAll { streams }
+    SelectAll { streams, next_start: 0 }
 }
 
-/// A simple select-all stream combinator that polls all inner streams round-robin.
+/// A fair select-all stream combinator that rotates the start index
+/// each poll to prevent starvation of later-registered connectors.
 struct SelectAll<'a> {
     streams: Vec<Pin<Box<dyn Stream<Item = InboundMessage> + Send + 'a>>>,
+    next_start: usize,
 }
 
 impl<'a> Stream for SelectAll<'a> {
@@ -364,14 +368,28 @@ impl<'a> Stream for SelectAll<'a> {
         }
 
         let len = self.streams.len();
-        for i in (0..len).rev() {
+        let start = self.next_start % len;
+        let mut exhausted = Vec::new();
+
+        // Poll in rotating order for fairness, track exhausted streams by index
+        for offset in 0..len {
+            let i = (start + offset) % len;
             match self.streams[i].as_mut().poll_next(cx) {
-                Poll::Ready(Some(item)) => return Poll::Ready(Some(item)),
+                Poll::Ready(Some(item)) => {
+                    self.next_start = i + 1;
+                    return Poll::Ready(Some(item));
+                }
                 Poll::Ready(None) => {
-                    drop(self.streams.swap_remove(i));
+                    exhausted.push(i);
                 }
                 Poll::Pending => {}
             }
+        }
+
+        // Remove exhausted streams in reverse index order to preserve indices
+        exhausted.sort_unstable_by(|a, b| b.cmp(a));
+        for i in exhausted {
+            let _ = self.streams.swap_remove(i);
         }
 
         if self.streams.is_empty() {
@@ -393,4 +411,327 @@ pub struct ChannelInfo {
     pub name: String,
     pub status: ConnectorStatus,
     pub capabilities: ConnectorCapabilities,
+}
+
+// ---------------------------------------------------------------------------
+// Session routing — universal key derivation from any connector's messages
+// ---------------------------------------------------------------------------
+
+/// Canonical session key derived from any vox InboundMessage. This is the
+/// identity that omegon's SessionRouter uses to map messages to isolated
+/// agent sessions. The key is connector-agnostic — Slack, Signal, email,
+/// LXMF, and voice all produce the same key shape.
+///
+/// Keying rules:
+///   - Threaded conversations: (channel, sender.id, thread_id)
+///   - Unthreaded conversations: (channel, sender.id, None)
+///   - Voice (always single-user): ("voice", "local", None)
+///
+/// Two messages with the same SessionKey land in the same agent session,
+/// preserving conversational context across turns.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SessionKey {
+    /// Connector name: "slack", "signal", "email", "lxmf", "voice"
+    pub channel: String,
+    /// Sender identity within that channel
+    pub sender_id: String,
+    /// Thread/conversation identifier (if the channel supports threads)
+    pub thread_id: Option<String>,
+}
+
+impl SessionKey {
+    /// Derive a session key from an inbound message.
+    pub fn from_inbound(msg: &InboundMessage) -> Self {
+        Self {
+            channel: msg.channel.clone(),
+            sender_id: msg.sender.id.clone(),
+            thread_id: msg.thread_id.clone(),
+        }
+    }
+
+    /// Singleton key for contexts with no identity (backward compat).
+    pub fn anonymous() -> Self {
+        Self {
+            channel: "anonymous".to_string(),
+            sender_id: "default".to_string(),
+            thread_id: None,
+        }
+    }
+
+    /// Stable string representation for logging and map keys.
+    pub fn as_routing_key(&self) -> String {
+        match &self.thread_id {
+            Some(tid) => format!("{}:{}:{}", self.channel, self.sender_id, tid),
+            None => format!("{}:{}", self.channel, self.sender_id),
+        }
+    }
+}
+
+impl std::fmt::Display for SessionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_routing_key())
+    }
+}
+
+/// Reply address extracted from an inbound message. Captures everything
+/// needed for vox_send to route the agent's response back to the right
+/// place, regardless of which connector originated the message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplyAddress {
+    /// Which connector to send through
+    pub channel: String,
+    /// Full envelope for addressing (preserved from inbound)
+    pub envelope: Envelope,
+    /// Thread to reply in (if threaded)
+    pub thread_id: Option<ThreadId>,
+    /// Original message ID (for reply-to threading)
+    pub reply_to: Option<MessageId>,
+    /// Protocol-specific hints (preserved from inbound)
+    pub hints: ChannelHints,
+}
+
+impl ReplyAddress {
+    /// Extract reply address from an inbound message.
+    pub fn from_inbound(msg: &InboundMessage) -> Self {
+        Self {
+            channel: msg.channel.clone(),
+            envelope: msg.envelope.clone(),
+            thread_id: msg.thread_id.clone(),
+            reply_to: Some(msg.id.clone()),
+            hints: msg.hints.clone(),
+        }
+    }
+
+    /// Build an OutboundMessage from a text reply using this address.
+    pub fn text_reply(&self, text: String) -> OutboundMessage {
+        OutboundMessage {
+            channel: self.channel.clone(),
+            envelope: self.envelope.clone(),
+            body: vec![BodyPart::Text { content: text }],
+            thread_id: self.thread_id.clone(),
+            reply_to: self.reply_to.clone(),
+            reaction: None,
+            hints: self.hints.clone(),
+            metadata: serde_json::Value::Null,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+/// Top-level vox configuration loaded from vox.toml.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct VoxConfig {
+    #[serde(default)]
+    pub signal: Option<SignalConfig>,
+    #[serde(default)]
+    pub email: Option<EmailConfig>,
+    #[serde(default)]
+    pub lxmf: Option<LxmfConfig>,
+    #[serde(default)]
+    pub voice: Option<VoiceConfig>,
+    #[serde(default)]
+    pub matrix: Option<MatrixConfig>,
+    #[serde(default)]
+    pub slack: Option<SlackConfig>,
+    #[serde(default)]
+    pub discord: Option<DiscordConfig>,
+}
+
+impl VoxConfig {
+    /// Load from a TOML file, returning default if file doesn't exist.
+    pub fn load(path: &std::path::Path) -> std::result::Result<Self, toml::de::Error> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => toml::from_str(&content),
+            Err(_) => Ok(Self::default()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SignalConfig {
+    /// Path to signal-cli data directory or presage state.
+    pub data_dir: String,
+    /// Phone number registered with Signal (e.g. "+15551234567").
+    pub phone_number: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EmailConfig {
+    /// IMAP server for receiving.
+    pub imap_host: String,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    /// SMTP server for sending.
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    /// Email address used as sender identity.
+    pub address: String,
+    /// Username for authentication (defaults to address if omitted).
+    #[serde(default)]
+    pub username: Option<String>,
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+fn default_smtp_port() -> u16 {
+    587
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LxmfConfig {
+    /// Path to Reticulum config directory.
+    #[serde(default = "default_rns_config")]
+    pub rns_config_dir: String,
+    /// LXMF display name for this node.
+    pub display_name: String,
+    /// Optional styrened RPC socket for delegated operation.
+    #[serde(default)]
+    pub styrened_socket: Option<String>,
+}
+
+fn default_rns_config() -> String {
+    "~/.reticulum".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VoiceConfig {
+    /// STT engine: "whisper" (default) or "vosk".
+    #[serde(default = "default_stt_engine")]
+    pub stt_engine: String,
+    /// Path to STT model files (required for airgapped).
+    pub stt_model_path: String,
+    /// TTS engine: "piper" (default) or "sherpa-onnx".
+    #[serde(default = "default_tts_engine")]
+    pub tts_engine: String,
+    /// Path to TTS model/voice files (required for airgapped).
+    pub tts_model_path: String,
+    /// Audio input device name (None = system default).
+    #[serde(default)]
+    pub input_device: Option<String>,
+    /// Audio output device name (None = system default).
+    #[serde(default)]
+    pub output_device: Option<String>,
+}
+
+fn default_stt_engine() -> String {
+    "whisper".to_string()
+}
+fn default_tts_engine() -> String {
+    "piper".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MatrixConfig {
+    /// Homeserver URL (e.g. "https://matrix.example.com").
+    pub homeserver: String,
+    /// Matrix user ID (e.g. "@bot:example.com").
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SlackConfig {
+    /// Workspace identifier for display purposes.
+    pub workspace: String,
+    /// Default channel ID to post to when no channel is specified.
+    #[serde(default)]
+    pub default_channel: Option<String>,
+    /// Only respond to messages that mention the bot (in channels).
+    /// DMs are always processed regardless of this setting.
+    #[serde(default = "default_true")]
+    pub require_mention: bool,
+    /// Allowlist of Slack user IDs permitted to interact. Empty = allow all.
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DiscordConfig {
+    /// Guild/server ID to operate in (optional, None = all guilds).
+    #[serde(default)]
+    pub guild_id: Option<String>,
+    /// Only respond to messages that mention the bot (in guild channels).
+    /// DMs are always processed regardless. Defaults to true.
+    #[serde(default = "default_true")]
+    pub require_mention: bool,
+    /// Allowlist of Discord user IDs permitted to interact. Empty = allow all.
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Secret store — in-memory, zeroized on drop, never persisted
+// ---------------------------------------------------------------------------
+
+/// Holds secrets delivered via bootstrap_secrets RPC. Values are wrapped in
+/// `SecretString` for automatic zeroization on drop. Never written to disk.
+pub struct SecretStore {
+    secrets: RwLock<HashMap<String, SecretString>>,
+}
+
+impl SecretStore {
+    pub fn new() -> Self {
+        Self {
+            secrets: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Ingest secrets from the bootstrap_secrets RPC payload.
+    /// Clears any previously stored secrets before inserting new ones
+    /// to prevent stale secrets from persisting across restarts.
+    pub fn bootstrap(&self, pairs: HashMap<String, String>) {
+        let mut store = self.secrets.write().unwrap();
+        store.clear();
+        for (name, value) in pairs {
+            store.insert(name, SecretString::from(value));
+        }
+    }
+
+    /// Retrieve a secret value. Caller is responsible for not logging it.
+    pub fn get(&self, name: &str) -> Option<String> {
+        let store = self.secrets.read().unwrap();
+        store.get(name).map(|s| s.expose_secret().to_string())
+    }
+
+    /// Check if a secret exists without exposing its value.
+    pub fn has(&self, name: &str) -> bool {
+        self.secrets.read().unwrap().contains_key(name)
+    }
+
+    /// List secret names (never values).
+    pub fn names(&self) -> Vec<String> {
+        self.secrets.read().unwrap().keys().cloned().collect()
+    }
+}
+
+impl Default for SecretStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Connector factory
+// ---------------------------------------------------------------------------
+
+/// Trait for building a connector from config + secrets. Each connector crate
+/// implements this so the vox binary can initialize connectors generically.
+#[async_trait]
+pub trait ConnectorFactory: Send + Sync {
+    /// Build and return a boxed connector, or an error if required
+    /// secrets/config are missing.
+    async fn build(
+        config: &Value,
+        secrets: &SecretStore,
+    ) -> Result<Box<dyn Connector>>
+    where
+        Self: Sized;
 }
