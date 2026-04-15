@@ -3,12 +3,28 @@ set -e
 
 # Bootstrap secrets, generate vox config from env, start omegon serve.
 #
-# LLM auth: two modes
+# ── LLM Auth ──────────────────────────────────────────────────────────
 #   1. API key via env var (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)
 #   2. OAuth via mounted auth.json (~/.config/omegon/auth.json)
 #      Mount: -v ~/.config/omegon:/config/omegon:ro
 #
-# Vox connector config: env vars override baked-in vox.toml
+# ── Secrets ───────────────────────────────────────────────────────────
+# Each secret supports three resolution modes (checked in this order):
+#
+#   1. Vault:  FOO_VAULT=secret/data/path#key  → vault: recipe
+#              Requires VAULT_ADDR + (VAULT_TOKEN or k8s auth)
+#   2. Env:    FOO=raw-value                   → env: recipe
+#   3. Absent: secret not configured, connector degrades gracefully
+#
+# Examples:
+#   -e VOX_DISCORD_BOT_TOKEN_VAULT=secret/data/vox/discord#bot_token
+#   -e VOX_DISCORD_BOT_TOKEN=xoxb-...
+#   -e ANTHROPIC_API_KEY_VAULT=secret/data/omegon/api#anthropic
+#   -e VAULT_ADDR=https://vault.example.com
+#   -e VAULT_TOKEN=hvs.xxx
+#
+# ── Connector Config ──────────────────────────────────────────────────
+# Env vars override baked-in vox.toml (non-sensitive, no Vault needed):
 #   VOX_DISCORD_OPERATORS=id1,id2       → operators = ["id1", "id2"]
 #   VOX_DISCORD_OPERATOR_ROLES=r1,r2    → operator_roles = ["r1", "r2"]
 #   VOX_DISCORD_ALLOWED_USERS=id1,id2   → allowed_users = ["id1", "id2"]
@@ -19,8 +35,6 @@ set -e
 #   VOX_SLACK_OPERATOR_GROUPS=g1,g2     → operator_groups = ["g1", "g2"]
 #   VOX_SLACK_ALLOWED_USERS=id1,id2     → allowed_users = ["id1", "id2"]
 #   VOX_SLACK_WORKSPACE=name            → workspace = "name"
-#
-# Extension secrets: env vars → secrets.json recipes
 
 OMEGON_HOME="${OMEGON_HOME:-/data/omegon}"
 OMEGON_CONFIG="${OMEGON_CONFIG:-/config/omegon}"
@@ -138,20 +152,41 @@ fi
 echo "{}" > "${SECRETS_JSON}"
 chmod 600 "${SECRETS_JSON}"
 
+# Write a recipe to secrets.json. Args: secret_name, recipe_string
+write_recipe() {
+    local name="$1"
+    local recipe="$2"
+    local current
+    current="$(cat "${SECRETS_JSON}")"
+    if [ "$current" = "{}" ]; then
+        echo "{\"${name}\": \"${recipe}\"}" > "${SECRETS_JSON}"
+    else
+        # Use | as sed delimiter — vault paths contain /
+        sed -i 's|}$|,"'"${name}"'": "'"${recipe}"'"}|' "${SECRETS_JSON}"
+    fi
+}
+
+# Add a secret recipe. Resolution order:
+#   1. FOO_VAULT=secret/data/path#key → vault: recipe
+#   2. FOO=raw-value                  → env: recipe
+#   3. (neither set)                  → skip
 add_recipe() {
     local name="$1"
-    local env_var="${2:-$1}"
+    local vault_var="${name}_VAULT"
+    local vault_path
+    vault_path="$(printenv "$vault_var" 2>/dev/null || true)"
+
+    if [ -n "$vault_path" ]; then
+        write_recipe "$name" "vault:${vault_path}"
+        echo "  ${name} -> vault:${vault_path}"
+        return
+    fi
+
     local val
-    val="$(printenv "$env_var" 2>/dev/null || true)"
+    val="$(printenv "$name" 2>/dev/null || true)"
     if [ -n "$val" ]; then
-        local current
-        current="$(cat "${SECRETS_JSON}")"
-        if [ "$current" = "{}" ]; then
-            echo "{\"${name}\": \"env:${env_var}\"}" > "${SECRETS_JSON}"
-        else
-            sed -i 's/}$/,"'"${name}"'": "env:'"${env_var}"'"}/' "${SECRETS_JSON}"
-        fi
-        echo "  ${name} -> env:${env_var}"
+        write_recipe "$name" "env:${name}"
+        echo "  ${name} -> env:${name}"
     fi
 }
 
@@ -169,33 +204,43 @@ chmod 600 "${SECRETS_JSON}"
 
 # ── Auth validation ───────────────────────────────────────────────────
 AUTH_JSON="${OMEGON_CONFIG}/auth.json"
-HAS_ENV_KEY=false
-HAS_AUTH_JSON=false
+HAS_CREDENTIALS=false
 
-for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY; do
+# Check env vars (direct or vault-backed)
+for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY \
+           ANTHROPIC_API_KEY_VAULT OPENAI_API_KEY_VAULT OPENROUTER_API_KEY_VAULT; do
     if [ -n "$(printenv "$var" 2>/dev/null || true)" ]; then
-        HAS_ENV_KEY=true
+        HAS_CREDENTIALS=true
         break
     fi
 done
 
+# Check mounted auth.json (OAuth tokens)
+AUTH_JSON="${OMEGON_CONFIG}/auth.json"
 if [ -f "$AUTH_JSON" ]; then
-    HAS_AUTH_JSON=true
+    HAS_CREDENTIALS=true
     echo "  auth.json mounted at ${AUTH_JSON}"
     mkdir -p "${HOME}/.config/omegon"
     ln -sf "${AUTH_JSON}" "${HOME}/.config/omegon/auth.json"
 fi
 
-if [ "$HAS_ENV_KEY" = false ] && [ "$HAS_AUTH_JSON" = false ]; then
+# Check if Vault is configured (secrets.json has vault: recipes)
+if [ "$HAS_CREDENTIALS" = false ] && grep -q '"vault:' "${SECRETS_JSON}" 2>/dev/null; then
+    HAS_CREDENTIALS=true
+    echo "  vault-backed credentials configured"
+fi
+
+if [ "$HAS_CREDENTIALS" = false ]; then
     echo "ERROR: No LLM credentials found."
     echo "  Provide one of:"
     echo "    -e ANTHROPIC_API_KEY=sk-..."
-    echo "    -e OPENAI_API_KEY=sk-..."
+    echo "    -e ANTHROPIC_API_KEY_VAULT=secret/data/omegon/api#anthropic"
     echo "    -v ~/.config/omegon:/config/omegon:ro  (for OAuth tokens)"
     exit 1
 fi
 
-if [ -z "$(printenv VOX_DISCORD_BOT_TOKEN 2>/dev/null || true)" ]; then
+if [ -z "$(printenv VOX_DISCORD_BOT_TOKEN 2>/dev/null || true)" ] \
+   && [ -z "$(printenv VOX_DISCORD_BOT_TOKEN_VAULT 2>/dev/null || true)" ]; then
     echo "  note: VOX_DISCORD_BOT_TOKEN not set — Discord connector will be degraded"
 fi
 
