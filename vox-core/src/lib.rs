@@ -715,6 +715,12 @@ pub struct DiscordConfig {
     /// input (the agent responds but won't follow embedded instructions).
     #[serde(default)]
     pub operators: Vec<String>,
+    /// Operator role IDs — any guild member with one of these Discord roles
+    /// gets operator trust level. Checked in addition to `operators`.
+    /// Use Discord Developer Mode to copy role IDs: Server Settings →
+    /// Roles → right-click → Copy Role ID.
+    #[serde(default)]
+    pub operator_roles: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

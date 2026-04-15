@@ -78,6 +78,13 @@ struct ReadyEvent {
 }
 
 #[derive(Debug, Deserialize)]
+struct GuildMember {
+    /// Role IDs the member has in this guild.
+    #[serde(default)]
+    roles: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DiscordMessage {
     id: String,
     channel_id: String,
@@ -90,6 +97,10 @@ struct DiscordMessage {
     timestamp: String,
     #[serde(default)]
     message_reference: Option<MessageReference>,
+    /// Guild member info — present on MESSAGE_CREATE in guilds.
+    /// Contains the sender's roles for permission checks.
+    #[serde(default)]
+    member: Option<GuildMember>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -491,6 +502,33 @@ async fn gateway_loop(
     }
 }
 
+/// Determine trust level for a message sender.
+///
+/// Operator if:
+///   1. User ID is in `config.operators`, OR
+///   2. Any of the member's guild roles is in `config.operator_roles`
+///
+/// DMs have no member/roles — only explicit user ID grants operator in DMs.
+fn classify_trust(
+    config: &DiscordConfig,
+    sender_id: &str,
+    member: Option<&GuildMember>,
+) -> vox_core::TrustLevel {
+    // Explicit user ID always wins
+    if config.operators.contains(&sender_id.to_string()) {
+        return vox_core::TrustLevel::Operator;
+    }
+    // Check guild roles
+    if !config.operator_roles.is_empty() {
+        if let Some(member) = member {
+            if member.roles.iter().any(|r| config.operator_roles.contains(r)) {
+                return vox_core::TrustLevel::Operator;
+            }
+        }
+    }
+    vox_core::TrustLevel::User
+}
+
 /// Parse a Discord MESSAGE_CREATE into a vox InboundMessage.
 fn parse_discord_message(
     msg: &DiscordMessage,
@@ -577,11 +615,7 @@ fn parse_discord_message(
             .and_then(|r| r.message_id.clone()),
         reaction: None,
         hints: ChannelHints::None,
-        trust_level: if config.operators.contains(&msg.author.id) {
-            vox_core::TrustLevel::Operator
-        } else {
-            vox_core::TrustLevel::User
-        },
+        trust_level: classify_trust(config, &msg.author.id, msg.member.as_ref()),
         metadata: serde_json::json!({
             "discord_message_id": msg.id,
             "discord_channel_id": msg.channel_id,
@@ -720,6 +754,7 @@ mod tests {
             require_mention: true,
             allowed_users: vec![],
             operators: vec![],
+            operator_roles: vec![],
         }
     }
 
@@ -736,6 +771,7 @@ mod tests {
             content: content.into(),
             timestamp: String::new(),
             message_reference: None,
+            member: None,
         }
     }
 
@@ -807,5 +843,71 @@ mod tests {
     fn empty_after_mention_strip_skipped() {
         let msg = make_msg("U1", "<@BOT1>", Some("G1"));
         assert!(parse_discord_message(&msg, &discord_config(), Some("BOT1")).is_none());
+    }
+
+    #[test]
+    fn trust_default_is_user() {
+        assert_eq!(
+            classify_trust(&discord_config(), "U1", None),
+            vox_core::TrustLevel::User
+        );
+    }
+
+    #[test]
+    fn trust_explicit_operator_user_id() {
+        let config = DiscordConfig {
+            operators: vec!["OP1".into()],
+            ..discord_config()
+        };
+        assert_eq!(
+            classify_trust(&config, "OP1", None),
+            vox_core::TrustLevel::Operator
+        );
+        assert_eq!(
+            classify_trust(&config, "U1", None),
+            vox_core::TrustLevel::User
+        );
+    }
+
+    #[test]
+    fn trust_operator_role() {
+        let config = DiscordConfig {
+            operator_roles: vec!["ROLE_ADMIN".into()],
+            ..discord_config()
+        };
+        let member_with_role = GuildMember {
+            roles: vec!["ROLE_ADMIN".into(), "ROLE_OTHER".into()],
+        };
+        let member_without_role = GuildMember {
+            roles: vec!["ROLE_OTHER".into()],
+        };
+
+        assert_eq!(
+            classify_trust(&config, "U1", Some(&member_with_role)),
+            vox_core::TrustLevel::Operator
+        );
+        assert_eq!(
+            classify_trust(&config, "U1", Some(&member_without_role)),
+            vox_core::TrustLevel::User
+        );
+        // DMs have no member — role check can't apply
+        assert_eq!(
+            classify_trust(&config, "U1", None),
+            vox_core::TrustLevel::User
+        );
+    }
+
+    #[test]
+    fn trust_user_id_overrides_missing_role() {
+        let config = DiscordConfig {
+            operators: vec!["OP1".into()],
+            operator_roles: vec!["ROLE_ADMIN".into()],
+            ..discord_config()
+        };
+        // User ID match — operator even without roles (DM case)
+        assert_eq!(
+            classify_trust(&config, "OP1", None),
+            vox_core::TrustLevel::Operator
+        );
     }
 }
