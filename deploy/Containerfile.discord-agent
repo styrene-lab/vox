@@ -34,7 +34,11 @@ RUN chmod +x /data/omegon/extensions/vox/bin/vox
 COPY deploy/manifest.container.toml /data/omegon/extensions/vox/manifest.toml
 
 # Vox runtime config (discord-only for this image)
-COPY deploy/discord-agent.toml /etc/vox/vox.toml
+# Placed at the default fallback path because omegon's clean_command()
+# strips VOX_CONFIG from the extension subprocess environment.
+# HOME is inherited, so vox resolves ~/.config/vox/vox.toml via dirs::config_dir().
+RUN mkdir -p /root/.config/vox
+COPY deploy/discord-agent.toml /root/.config/vox/vox.toml
 
 # Entrypoint script
 COPY deploy/entrypoint.sh /entrypoint.sh

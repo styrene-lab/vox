@@ -192,6 +192,10 @@ pub struct InboundMessage {
     pub reaction: Option<Reaction>,
     #[serde(default)]
     pub hints: ChannelHints,
+    /// Trust level for this message. Determines how omegon frames it
+    /// in the agent conversation (instruction vs data plane).
+    #[serde(default)]
+    pub trust_level: TrustLevel,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
 }
@@ -245,6 +249,44 @@ pub enum ConnectorStatus {
     Connected,
     Degraded,
     Disconnected,
+}
+
+// ---------------------------------------------------------------------------
+// Trust levels — instruction plane vs data plane
+// ---------------------------------------------------------------------------
+
+/// Trust level for an inbound message. Determines how omegon frames the
+/// message when injecting it into the agent conversation.
+///
+/// - `Operator`: full instruction authority — the agent treats the message
+///   as a command from its operator. Only assigned to sender IDs listed in
+///   the connector's `operators` config.
+///
+/// - `User`: the message is external input — the agent responds helpfully
+///   but does NOT follow instructions embedded in it. This is the default
+///   for all senders not in the `operators` list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustLevel {
+    /// Full instruction authority. Messages treated as operator commands.
+    Operator,
+    /// External input only. Agent responds but does not follow instructions.
+    User,
+}
+
+impl Default for TrustLevel {
+    fn default() -> Self {
+        Self::User
+    }
+}
+
+impl std::fmt::Display for TrustLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Operator => write!(f, "operator"),
+            Self::User => write!(f, "user"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +689,9 @@ pub struct SlackConfig {
     /// Allowlist of Slack user IDs permitted to interact. Empty = allow all.
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Operator user IDs — full instruction authority. See DiscordConfig.operators.
+    #[serde(default)]
+    pub operators: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -665,6 +710,11 @@ pub struct DiscordConfig {
     /// Allowlist of Discord user IDs permitted to interact. Empty = allow all.
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Operator user IDs — messages from these users have full instruction
+    /// authority. Messages from all other users are treated as external
+    /// input (the agent responds but won't follow embedded instructions).
+    #[serde(default)]
+    pub operators: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

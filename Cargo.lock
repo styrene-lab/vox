@@ -865,9 +865,9 @@ dependencies = [
 
 [[package]]
 name = "omegon-extension"
-version = "0.15.23"
+version = "0.15.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d75a0b8377337c6289d60f93a36502837e16784250475d894e4c1de9ee81abf"
+checksum = "ab62d501b2142527011c29a4abf0a5d40d53f4971e040eb033cc80d4abf84066"
 dependencies = [
  "anyhow",
  "async-trait",

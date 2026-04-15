@@ -577,6 +577,11 @@ fn parse_discord_message(
             .and_then(|r| r.message_id.clone()),
         reaction: None,
         hints: ChannelHints::None,
+        trust_level: if config.operators.contains(&msg.author.id) {
+            vox_core::TrustLevel::Operator
+        } else {
+            vox_core::TrustLevel::User
+        },
         metadata: serde_json::json!({
             "discord_message_id": msg.id,
             "discord_channel_id": msg.channel_id,
@@ -714,6 +719,7 @@ mod tests {
             guild_id: None,
             require_mention: true,
             allowed_users: vec![],
+            operators: vec![],
         }
     }
 

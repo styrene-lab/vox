@@ -488,6 +488,11 @@ fn parse_slack_event(
             icon_emoji: None,
             unfurl: false,
         },
+        trust_level: if config.operators.contains(&user.to_string()) {
+            vox_core::TrustLevel::Operator
+        } else {
+            vox_core::TrustLevel::User
+        },
         metadata: serde_json::json!({
             "slack_ts": ts,
             "slack_channel": channel,
@@ -615,6 +620,7 @@ mod tests {
             default_channel: None,
             require_mention: true,
             allowed_users: vec![],
+            operators: vec![],
         }
     }
 
