@@ -798,6 +798,7 @@ async fn main() {
             &[
                 "VOX_SLACK_BOT_TOKEN",
                 "VOX_SLACK_APP_TOKEN",
+                "VOX_SLACK_USER_TOKEN",
                 "VOX_DISCORD_BOT_TOKEN",
                 "VOX_SIGNAL_PASSWORD",
                 "VOX_EMAIL_PASSWORD",

@@ -675,10 +675,37 @@ pub struct MatrixConfig {
     pub user_id: String,
 }
 
+/// Slack operating mode.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackMode {
+    /// Bot identity — uses bot + app tokens, Socket Mode WebSocket.
+    #[default]
+    Bot,
+    /// Operator proxy — uses user token, polls conversations.history.
+    Proxy,
+}
+
+/// Proxy mode posture — controls write capability.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackPosture {
+    /// Read-only. Agent can see messages but not send.
+    #[default]
+    Observe,
+    /// Read/write. Agent can send messages as the operator.
+    Participate,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SlackConfig {
     /// Workspace identifier for display purposes.
     pub workspace: String,
+    /// Operating mode: "bot" (default) or "proxy" (user token polling).
+    #[serde(default)]
+    pub mode: SlackMode,
+
+    // ── Bot mode fields ─────────────────────────────────────────────
     /// Default channel ID to post to when no channel is specified.
     #[serde(default)]
     pub default_channel: Option<String>,
@@ -697,6 +724,30 @@ pub struct SlackConfig {
     /// usergroups.users.list API — no per-message API calls.
     #[serde(default)]
     pub operator_groups: Vec<String>,
+
+    // ── Proxy mode fields ───────────────────────────────────────────
+    /// Posture: "observe" (read-only, default) or "participate" (read/write).
+    #[serde(default)]
+    pub posture: SlackPosture,
+    /// Channel IDs to watch in proxy mode. Empty = auto-discover all
+    /// channels the user is a member of via conversations.list.
+    #[serde(default)]
+    pub watch_channels: Vec<String>,
+    /// Poll interval in seconds for proxy mode (default: 30).
+    #[serde(default = "default_proxy_poll_secs")]
+    pub proxy_poll_secs: u64,
+    /// Channel rediscovery interval in seconds when watch_channels is
+    /// empty (default: 300). Ignored when watch_channels is explicit.
+    #[serde(default = "default_channel_refresh_secs")]
+    pub channel_refresh_secs: u64,
+}
+
+fn default_proxy_poll_secs() -> u64 {
+    30
+}
+
+fn default_channel_refresh_secs() -> u64 {
+    300
 }
 
 fn default_true() -> bool {

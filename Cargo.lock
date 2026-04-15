@@ -1878,6 +1878,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "toml",
  "tracing",
  "url",
  "vox-core",

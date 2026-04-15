@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,7 +12,7 @@ use tracing;
 use vox_core::{
     Address, BodyPart, ChannelHints, Connector, ConnectorCapabilities, ConnectorFactory,
     ConnectorStatus, Envelope, Error, InboundMessage, MessageId, OutboundMessage, Result,
-    SecretStore, SlackConfig,
+    SecretStore, SlackConfig, SlackMode, SlackPosture,
 };
 
 // ---------------------------------------------------------------------------
@@ -74,18 +74,29 @@ struct SlackState {
     /// Cached set of user IDs with operator trust. Built at startup from
     /// config.operators + resolved config.operator_groups membership.
     operator_user_ids: HashSet<String>,
+    // ── Proxy mode state ────────────────────────────────────────────
+    /// Authenticated user ID for proxy mode (resolved via auth.test).
+    proxy_user_id: Option<String>,
+    /// Per-channel "last seen" timestamp for proxy polling.
+    channel_cursors: HashMap<String, String>,
+    /// Channels being watched (explicit or auto-discovered).
+    watched_channels: Vec<String>,
 }
 
-/// Slack connector using Socket Mode (WebSocket) for receiving events and
-/// the Web API for sending messages. No public URL required.
+/// Slack connector supporting two operating modes:
 ///
-/// Secrets consumed (via bootstrap_secrets):
-///   - VOX_SLACK_BOT_TOKEN: required — xoxb-* Bot User OAuth Token
-///   - VOX_SLACK_APP_TOKEN: required — xapp-* App-Level Token (Socket Mode)
+/// **Bot mode** (default): Socket Mode WebSocket for receiving, Web API for sending.
+///   - VOX_SLACK_BOT_TOKEN: xoxb-* Bot User OAuth Token
+///   - VOX_SLACK_APP_TOKEN: xapp-* App-Level Token
+///
+/// **Proxy mode**: Polls conversations.history with a user token. Reads the
+/// operator's channels and surfaces messages to the agent.
+///   - VOX_SLACK_USER_TOKEN: xoxp-* User OAuth Token
 pub struct SlackConnector {
     config: SlackConfig,
     bot_token: Option<String>,
     app_token: Option<String>,
+    user_token: Option<String>,
     http: Client,
     state: Arc<Mutex<SlackState>>,
     notify: Arc<Notify>,
@@ -95,44 +106,72 @@ impl SlackConnector {
     pub fn new(config: SlackConfig, secrets: &SecretStore) -> Self {
         let bot_token = secrets.get("VOX_SLACK_BOT_TOKEN");
         let app_token = secrets.get("VOX_SLACK_APP_TOKEN");
+        let user_token = secrets.get("VOX_SLACK_USER_TOKEN");
 
-        let status = if bot_token.is_some() && app_token.is_some() {
-            tracing::info!(
-                workspace = %config.workspace,
-                require_mention = config.require_mention,
-                "slack connector initialized"
-            );
-            ConnectorStatus::Initializing
-        } else {
-            let missing: Vec<&str> = [
-                (!bot_token.is_some()).then_some("VOX_SLACK_BOT_TOKEN"),
-                (!app_token.is_some()).then_some("VOX_SLACK_APP_TOKEN"),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            tracing::warn!(?missing, "slack connector degraded — missing secrets");
-            ConnectorStatus::Degraded
+        let status = match config.mode {
+            SlackMode::Bot => {
+                if bot_token.is_some() && app_token.is_some() {
+                    tracing::info!(
+                        workspace = %config.workspace,
+                        require_mention = config.require_mention,
+                        "slack bot connector initialized"
+                    );
+                    ConnectorStatus::Initializing
+                } else {
+                    let missing: Vec<&str> = [
+                        (!bot_token.is_some()).then_some("VOX_SLACK_BOT_TOKEN"),
+                        (!app_token.is_some()).then_some("VOX_SLACK_APP_TOKEN"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    tracing::warn!(?missing, "slack bot connector degraded — missing secrets");
+                    ConnectorStatus::Degraded
+                }
+            }
+            SlackMode::Proxy => {
+                if user_token.is_some() {
+                    tracing::info!(
+                        workspace = %config.workspace,
+                        posture = ?config.posture,
+                        "slack proxy connector initialized"
+                    );
+                    ConnectorStatus::Initializing
+                } else {
+                    tracing::warn!("slack proxy connector degraded — missing VOX_SLACK_USER_TOKEN");
+                    ConnectorStatus::Degraded
+                }
+            }
         };
 
         Self {
             config,
             bot_token,
             app_token,
+            user_token,
             http: Client::new(),
             state: Arc::new(Mutex::new(SlackState {
                 inbox: VecDeque::new(),
                 status,
                 bot_user_id: None,
                 operator_user_ids: HashSet::new(),
+                proxy_user_id: None,
+                channel_cursors: HashMap::new(),
+                watched_channels: Vec::new(),
             })),
             notify: Arc::new(Notify::new()),
         }
     }
 
-    /// Start the Socket Mode WebSocket listener in a background task.
-    /// Call this after construction to begin receiving events.
     pub async fn start(&self) -> Result<()> {
+        match self.config.mode {
+            SlackMode::Bot => self.start_bot_mode().await,
+            SlackMode::Proxy => self.start_proxy_mode().await,
+        }
+    }
+
+    /// Bot mode: Socket Mode WebSocket listener.
+    async fn start_bot_mode(&self) -> Result<()> {
         let Some(ref app_token) = self.app_token else {
             return Err(Error::SendFailed(
                 "cannot start socket mode without VOX_SLACK_APP_TOKEN".into(),
@@ -189,12 +228,10 @@ impl SlackConnector {
             s.bot_user_id.clone()
         };
 
-        // Spawn the WebSocket listener — it refreshes the URL on each reconnect
         tokio::spawn(async move {
             socket_mode_loop(http, app_token, state, notify, config, bot_user_id).await;
         });
 
-        // Mark as connected
         {
             let mut s = self.state.lock().await;
             s.status = ConnectorStatus::Connected;
@@ -202,6 +239,75 @@ impl SlackConnector {
 
         tracing::info!(workspace = %self.config.workspace, "slack socket mode connected");
         Ok(())
+    }
+
+    /// Proxy mode: poll conversations.history with user token.
+    async fn start_proxy_mode(&self) -> Result<()> {
+        let Some(ref user_token) = self.user_token else {
+            return Err(Error::SendFailed(
+                "cannot start proxy mode without VOX_SLACK_USER_TOKEN".into(),
+            ));
+        };
+
+        // Resolve authenticated user ID
+        let proxy_user_id = resolve_user_identity(&self.http, user_token).await?;
+        tracing::info!(user_id = %proxy_user_id, "resolved proxy user identity");
+
+        // Discover channels to watch
+        let channels = if self.config.watch_channels.is_empty() {
+            let discovered = discover_user_channels(&self.http, user_token).await?;
+            tracing::info!(count = discovered.len(), "auto-discovered user channels");
+            discovered
+        } else {
+            self.config.watch_channels.clone()
+        };
+
+        // Warn about rate limits
+        let polls_per_min = channels.len() as u64 * 60 / self.config.proxy_poll_secs.max(1);
+        if polls_per_min > 45 {
+            tracing::warn!(
+                channels = channels.len(),
+                poll_secs = self.config.proxy_poll_secs,
+                requests_per_min = polls_per_min,
+                "proxy poll rate may exceed Slack API limits — consider increasing proxy_poll_secs"
+            );
+        }
+
+        // Initialize cursors to "now" — no history replay
+        let now_ts = format!("{}", chrono::Utc::now().timestamp());
+        let cursors: HashMap<String, String> = channels
+            .iter()
+            .map(|ch| (ch.clone(), now_ts.clone()))
+            .collect();
+
+        {
+            let mut s = self.state.lock().await;
+            s.proxy_user_id = Some(proxy_user_id.clone());
+            s.watched_channels = channels;
+            s.channel_cursors = cursors;
+            s.status = ConnectorStatus::Connected;
+        }
+
+        let state = self.state.clone();
+        let notify = self.notify.clone();
+        let config = self.config.clone();
+        let http = self.http.clone();
+        let user_token = user_token.clone();
+
+        tokio::spawn(async move {
+            proxy_poll_loop(http, user_token, state, notify, config, proxy_user_id).await;
+        });
+
+        tracing::info!(workspace = %self.config.workspace, "slack proxy mode started");
+        Ok(())
+    }
+
+    /// Return the active API token for the current mode.
+    fn active_token(&self) -> Option<&str> {
+        match self.config.mode {
+            SlackMode::Bot => self.bot_token.as_deref(),
+            SlackMode::Proxy => self.user_token.as_deref(),
+        }
     }
 
     async fn resolve_bot_identity(&self, bot_token: &str) {
@@ -273,9 +379,9 @@ impl SlackConnector {
         text: &str,
         thread_ts: Option<&str>,
     ) -> Result<MessageId> {
-        let Some(ref bot_token) = self.bot_token else {
-            return Err(Error::SendFailed("no bot token".into()));
-        };
+        let token = self
+            .active_token()
+            .ok_or_else(|| Error::SendFailed("no API token available".into()))?;
 
         let mut body = serde_json::json!({
             "channel": channel,
@@ -289,7 +395,7 @@ impl SlackConnector {
         let resp = self
             .http
             .post("https://slack.com/api/chat.postMessage")
-            .bearer_auth(bot_token)
+            .bearer_auth(token)
             .json(&body)
             .send()
             .await
@@ -311,9 +417,9 @@ impl SlackConnector {
     }
 
     async fn add_reaction(&self, channel: &str, timestamp: &str, emoji: &str) -> Result<()> {
-        let Some(ref bot_token) = self.bot_token else {
-            return Err(Error::SendFailed("no bot token".into()));
-        };
+        let token = self
+            .active_token()
+            .ok_or_else(|| Error::SendFailed("no API token available".into()))?;
 
         let body = serde_json::json!({
             "channel": channel,
@@ -324,7 +430,7 @@ impl SlackConnector {
         let resp = self
             .http
             .post("https://slack.com/api/reactions.add")
-            .bearer_auth(bot_token)
+            .bearer_auth(token)
             .json(&body)
             .send()
             .await
@@ -488,6 +594,280 @@ async fn open_socket_url(http: &Client, app_token: &str) -> Result<String> {
         .ok_or_else(|| Error::SendFailed("no WebSocket URL in response".into()))
 }
 
+// ---------------------------------------------------------------------------
+// Proxy mode helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve the authenticated user's ID from a user token via auth.test.
+async fn resolve_user_identity(http: &Client, token: &str) -> Result<String> {
+    let resp = http
+        .get("https://slack.com/api/auth.test")
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| Error::SendFailed(format!("auth.test failed: {e}")))?;
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::SendFailed(format!("auth.test parse failed: {e}")))?;
+
+    if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+        return Err(Error::SendFailed(format!("auth.test error: {err}")));
+    }
+
+    body.get("user_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| Error::SendFailed("auth.test response missing user_id".into()))
+}
+
+/// Discover all channels the authenticated user is a member of.
+async fn discover_user_channels(http: &Client, token: &str) -> Result<Vec<String>> {
+    let mut channels = Vec::new();
+    let mut cursor = String::new();
+
+    loop {
+        let mut req = http
+            .get("https://slack.com/api/conversations.list")
+            .bearer_auth(token)
+            .query(&[
+                ("types", "public_channel,private_channel,im,mpim"),
+                ("exclude_archived", "true"),
+                ("limit", "200"),
+            ]);
+
+        if !cursor.is_empty() {
+            req = req.query(&[("cursor", cursor.as_str())]);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::SendFailed(format!("conversations.list failed: {e}")))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::SendFailed(format!("conversations.list parse failed: {e}")))?;
+
+        if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+            return Err(Error::SendFailed(format!("conversations.list error: {err}")));
+        }
+
+        if let Some(arr) = body.get("channels").and_then(|v| v.as_array()) {
+            for ch in arr {
+                if let Some(id) = ch.get("id").and_then(|v| v.as_str()) {
+                    channels.push(id.to_string());
+                }
+            }
+        }
+
+        // Paginate
+        let next = body
+            .pointer("/response_metadata/next_cursor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if next.is_empty() {
+            break;
+        }
+        cursor = next.to_string();
+    }
+
+    Ok(channels)
+}
+
+/// Fetch messages from a channel newer than `oldest` timestamp.
+async fn fetch_channel_history(
+    http: &Client,
+    token: &str,
+    channel: &str,
+    oldest: &str,
+) -> std::result::Result<Vec<serde_json::Value>, String> {
+    let resp = http
+        .get("https://slack.com/api/conversations.history")
+        .bearer_auth(token)
+        .query(&[
+            ("channel", channel),
+            ("oldest", oldest),
+            ("limit", "100"),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("conversations.history failed: {e}"))?;
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("conversations.history parse failed: {e}"))?;
+
+    if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+        return Err(format!("conversations.history error: {err}"));
+    }
+
+    Ok(body
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Background loop for proxy mode: poll channels for new messages.
+async fn proxy_poll_loop(
+    http: Client,
+    user_token: String,
+    state: Arc<Mutex<SlackState>>,
+    notify: Arc<Notify>,
+    config: SlackConfig,
+    proxy_user_id: String,
+) {
+    let poll_interval = std::time::Duration::from_secs(config.proxy_poll_secs.max(5));
+    let refresh_interval = std::time::Duration::from_secs(config.channel_refresh_secs);
+    let auto_discover = config.watch_channels.is_empty();
+    let mut last_refresh = std::time::Instant::now();
+
+    loop {
+        tokio::time::sleep(poll_interval).await;
+
+        // Periodic channel rediscovery
+        if auto_discover && last_refresh.elapsed() >= refresh_interval {
+            match discover_user_channels(&http, &user_token).await {
+                Ok(channels) => {
+                    let mut s = state.lock().await;
+                    // Initialize cursors for any new channels
+                    let now_ts = format!("{}", chrono::Utc::now().timestamp());
+                    for ch in &channels {
+                        s.channel_cursors.entry(ch.clone()).or_insert_with(|| now_ts.clone());
+                    }
+                    s.watched_channels = channels;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "proxy channel rediscovery failed");
+                }
+            }
+            last_refresh = std::time::Instant::now();
+        }
+
+        // Snapshot channels and cursors
+        let (channels, mut cursors) = {
+            let s = state.lock().await;
+            (s.watched_channels.clone(), s.channel_cursors.clone())
+        };
+
+        let mut new_messages = Vec::new();
+
+        for channel_id in &channels {
+            let oldest = cursors.get(channel_id).map(|s| s.as_str()).unwrap_or("0");
+
+            match fetch_channel_history(&http, &user_token, channel_id, oldest).await {
+                Ok(messages) => {
+                    // conversations.history returns newest-first; reverse for chronological order
+                    for msg in messages.iter().rev() {
+                        if let Some(inbound) =
+                            parse_proxy_message(msg, &config, &proxy_user_id, channel_id)
+                        {
+                            new_messages.push(inbound);
+                        }
+                        // Update cursor to this message's ts (newest wins)
+                        if let Some(ts) = msg.get("ts").and_then(|v| v.as_str()) {
+                            cursors.insert(channel_id.clone(), ts.to_string());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(channel = %channel_id, error = %e, "proxy poll failed for channel");
+                }
+            }
+
+            // Brief pause between channels to avoid rate limit bursts
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // Push to inbox
+        if !new_messages.is_empty() {
+            let mut s = state.lock().await;
+            s.channel_cursors = cursors;
+            for msg in new_messages {
+                if s.inbox.len() >= MAX_INBOX_SIZE {
+                    tracing::warn!("slack proxy inbox full ({MAX_INBOX_SIZE}), dropping oldest");
+                    s.inbox.pop_front();
+                }
+                s.inbox.push_back(msg);
+            }
+            drop(s);
+            notify.notify_one();
+        } else {
+            // Still update cursors even if no new messages
+            let mut s = state.lock().await;
+            s.channel_cursors = cursors;
+        }
+    }
+}
+
+/// Parse a message from conversations.history into an InboundMessage for proxy mode.
+/// No mention filtering — all messages from other users are surfaced.
+/// All messages are TrustLevel::User (external data to the operator).
+fn parse_proxy_message(
+    msg: &serde_json::Value,
+    config: &SlackConfig,
+    proxy_user_id: &str,
+    channel_id: &str,
+) -> Option<InboundMessage> {
+    // Skip subtypes (joins, edits, etc.) and bot messages
+    if msg.get("subtype").is_some() || msg.get("bot_id").is_some() {
+        return None;
+    }
+
+    let user = msg.get("user")?.as_str()?;
+    let text = msg.get("text")?.as_str()?;
+    let ts = msg.get("ts")?.as_str()?;
+    let thread_ts = msg.get("thread_ts").and_then(|v| v.as_str());
+
+    // Filter out the operator's own messages
+    if user == proxy_user_id {
+        return None;
+    }
+
+    if text.is_empty() {
+        return None;
+    }
+
+    Some(InboundMessage {
+        id: ts.to_string(),
+        channel: "slack".to_string(),
+        sender: Address {
+            id: user.to_string(),
+            display_name: None,
+        },
+        timestamp: chrono::Utc::now(),
+        envelope: Envelope::Channel {
+            workspace: config.workspace.clone(),
+            channel_id: channel_id.to_string(),
+        },
+        body: vec![BodyPart::Text {
+            content: text.to_string(),
+        }],
+        thread_id: thread_ts.map(|s| s.to_string()),
+        reply_to: None,
+        reaction: None,
+        hints: ChannelHints::Slack {
+            username: None,
+            icon_emoji: None,
+            unfurl: false,
+        },
+        trust_level: vox_core::TrustLevel::User,
+        metadata: serde_json::json!({
+            "slack_ts": ts,
+            "slack_channel": channel_id,
+            "slack_user": user,
+            "proxy_mode": true,
+        }),
+    })
+}
+
 /// Parse a Slack event into a vox InboundMessage, applying mention/DM/allowlist filtering.
 fn parse_slack_event(
     event: &serde_json::Value,
@@ -597,12 +977,13 @@ impl Connector for SlackConnector {
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {
+        let is_proxy = self.config.mode == SlackMode::Proxy;
         ConnectorCapabilities {
-            send: true,
+            send: if is_proxy { self.config.posture == SlackPosture::Participate } else { true },
             receive: true,
             threads: true,
-            reactions: true,
-            attachments: false, // TODO: file uploads
+            reactions: !is_proxy,
+            attachments: false,
             read_receipts: false,
             rich_text: true,
             typing_indicators: false,
@@ -613,6 +994,12 @@ impl Connector for SlackConnector {
     }
 
     async fn send(&self, message: OutboundMessage) -> Result<MessageId> {
+        if self.config.mode == SlackMode::Proxy && self.config.posture == SlackPosture::Observe {
+            return Err(Error::SendFailed(
+                "proxy mode is in observe posture — sending is disabled".into(),
+            ));
+        }
+
         // Determine target channel
         let channel_id = match &message.envelope {
             Envelope::Channel { channel_id, .. } => channel_id.clone(),
@@ -696,11 +1083,16 @@ mod tests {
     fn slack_config() -> SlackConfig {
         SlackConfig {
             workspace: "test".into(),
+            mode: SlackMode::Bot,
             default_channel: None,
             require_mention: true,
             allowed_users: vec![],
             operators: vec![],
             operator_groups: vec![],
+            posture: SlackPosture::Observe,
+            watch_channels: vec![],
+            proxy_poll_secs: 30,
+            channel_refresh_secs: 300,
         }
     }
 
@@ -795,5 +1187,150 @@ mod tests {
         event["thread_ts"] = serde_json::json!("1111.2222");
         let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"), &empty_ops()).unwrap();
         assert_eq!(msg.thread_id, Some("1111.2222".into()));
+    }
+
+    // ── Proxy mode tests ───────────────────────────────────────────
+
+    fn proxy_config() -> SlackConfig {
+        SlackConfig {
+            mode: SlackMode::Proxy,
+            posture: SlackPosture::Observe,
+            ..slack_config()
+        }
+    }
+
+    fn history_message(user: &str, text: &str, channel: &str, ts: &str) -> serde_json::Value {
+        serde_json::json!({
+            "user": user,
+            "text": text,
+            "channel": channel,
+            "ts": ts,
+        })
+    }
+
+    #[test]
+    fn proxy_skips_own_messages() {
+        let msg = history_message("OPERATOR1", "my own message", "C456", "1234.5678");
+        assert!(parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").is_none());
+    }
+
+    #[test]
+    fn proxy_passes_other_users() {
+        let msg = history_message("U999", "hello from someone else", "C456", "1234.5678");
+        let inbound = parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456");
+        assert!(inbound.is_some());
+        let inbound = inbound.unwrap();
+        assert_eq!(inbound.sender.id, "U999");
+    }
+
+    #[test]
+    fn proxy_skips_bot_messages() {
+        let mut msg = history_message("UBOT", "bot says hi", "C456", "1234.5678");
+        msg["bot_id"] = serde_json::json!("B123");
+        assert!(parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").is_none());
+    }
+
+    #[test]
+    fn proxy_skips_subtypes() {
+        let mut msg = history_message("U999", "joined", "C456", "1234.5678");
+        msg["subtype"] = serde_json::json!("channel_join");
+        assert!(parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").is_none());
+    }
+
+    #[test]
+    fn proxy_all_messages_are_user_trust() {
+        let msg = history_message("U999", "some message", "C456", "1234.5678");
+        let inbound = parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").unwrap();
+        assert_eq!(inbound.trust_level, vox_core::TrustLevel::User);
+    }
+
+    #[test]
+    fn proxy_no_mention_filtering() {
+        // In proxy mode, messages without any mention are still processed
+        let msg = history_message("U999", "no mention here", "C456", "1234.5678");
+        assert!(parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").is_some());
+    }
+
+    #[test]
+    fn proxy_preserves_thread_ts() {
+        let mut msg = history_message("U999", "thread reply", "C456", "1234.5678");
+        msg["thread_ts"] = serde_json::json!("1111.2222");
+        let inbound = parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").unwrap();
+        assert_eq!(inbound.thread_id, Some("1111.2222".into()));
+    }
+
+    #[test]
+    fn proxy_text_not_stripped() {
+        // Mentions in text should be preserved as-is (no bot mention stripping)
+        let msg = history_message("U999", "hey <@U123> check this", "C456", "1234.5678");
+        let inbound = parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").unwrap();
+        assert_eq!(
+            inbound.body[0],
+            BodyPart::Text { content: "hey <@U123> check this".into() }
+        );
+    }
+
+    #[test]
+    fn proxy_metadata_includes_proxy_flag() {
+        let msg = history_message("U999", "hello", "C456", "1234.5678");
+        let inbound = parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").unwrap();
+        assert_eq!(inbound.metadata["proxy_mode"], true);
+    }
+
+    #[test]
+    fn observe_posture_disables_send() {
+        let config = SlackConfig {
+            mode: SlackMode::Proxy,
+            posture: SlackPosture::Observe,
+            ..slack_config()
+        };
+        let connector = SlackConnector::new(config, &vox_core::SecretStore::new());
+        assert!(!connector.capabilities().send);
+    }
+
+    #[test]
+    fn participate_posture_enables_send() {
+        let config = SlackConfig {
+            mode: SlackMode::Proxy,
+            posture: SlackPosture::Participate,
+            ..slack_config()
+        };
+        let connector = SlackConnector::new(config, &vox_core::SecretStore::new());
+        assert!(connector.capabilities().send);
+    }
+
+    #[test]
+    fn default_mode_is_bot() {
+        let toml = r#"workspace = "test""#;
+        let config: SlackConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.mode, SlackMode::Bot);
+    }
+
+    #[test]
+    fn proxy_mode_parses() {
+        let toml = r#"
+workspace = "test"
+mode = "proxy"
+posture = "participate"
+"#;
+        let config: SlackConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.mode, SlackMode::Proxy);
+        assert_eq!(config.posture, SlackPosture::Participate);
+    }
+
+    #[test]
+    fn existing_config_unchanged() {
+        // A config with no mode field deserializes with Bot defaults
+        let toml = r#"
+workspace = "test"
+require_mention = false
+operators = ["U1"]
+"#;
+        let config: SlackConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.mode, SlackMode::Bot);
+        assert!(!config.require_mention);
+        assert_eq!(config.operators, vec!["U1".to_string()]);
+        assert_eq!(config.posture, SlackPosture::Observe);
+        assert!(config.watch_channels.is_empty());
     }
 }
