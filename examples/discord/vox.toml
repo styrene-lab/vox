@@ -1,0 +1,19 @@
+# Vox Discord connector configuration
+#
+# Access control:
+#   operators       — Discord user IDs with full instruction authority
+#   operator_roles  — Discord role IDs that grant operator trust
+#   allowed_users   — who can interact at all (empty = everyone)
+#   require_mention — must @mention bot in channels (DMs always pass)
+#   guild_id        — restrict to a single server (optional)
+#
+# Find your Discord user/role IDs:
+#   Settings > Advanced > enable Developer Mode
+#   Right-click user/role > Copy ID
+
+[discord]
+require_mention = true
+operators = []
+# operator_roles = []
+# allowed_users = []
+# guild_id = "YOUR_SERVER_ID"

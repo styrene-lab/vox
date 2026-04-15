@@ -1,0 +1,52 @@
+# Two Slack agents from one image:
+#   slack-bot   — dedicated bot identity, responds to users
+#   slack-proxy — monitors the operator's channels, read-only
+#
+# Build:
+#   podman build -t slack-agent deploy/slack-dual
+#
+# Run:
+#   cp deploy/slack-dual/.env.example deploy/slack-dual/.env
+#   # edit .env with your tokens
+#   podman compose -f deploy/slack-dual/compose.yml up
+
+services:
+  slack-bot:
+    image: slack-agent
+    container_name: slack-bot
+    restart: unless-stopped
+    environment:
+      - ANTHROPIC_API_KEY
+      - VOX_SLACK_BOT_TOKEN
+      - VOX_SLACK_APP_TOKEN
+      - VOX_SLACK_WORKSPACE
+      - VOX_SLACK_OPERATORS
+      - VOX_SLACK_OPERATOR_GROUPS
+      - VOX_SLACK_REQUIRE_MENTION
+      - VOX_TOML_SOURCE=/config/bot.toml
+    volumes:
+      - ./bot.toml:/config/bot.toml:ro
+      - bot-data:/data/omegon
+    ports:
+      - "7842:7842"
+
+  slack-proxy:
+    image: slack-agent
+    container_name: slack-proxy
+    restart: unless-stopped
+    environment:
+      - ANTHROPIC_API_KEY
+      - VOX_SLACK_USER_TOKEN
+      - VOX_SLACK_WORKSPACE
+      - VOX_SLACK_POSTURE
+      - VOX_SLACK_WATCH_CHANNELS
+      - VOX_TOML_SOURCE=/config/proxy.toml
+    volumes:
+      - ./proxy.toml:/config/proxy.toml:ro
+      - proxy-data:/data/omegon
+    ports:
+      - "7843:7842"
+
+volumes:
+  bot-data:
+  proxy-data:

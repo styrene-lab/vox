@@ -1,0 +1,9 @@
+# Slack proxy — monitors the operator's channels.
+# Uses a user OAuth token, polls conversations.history.
+
+[slack]
+workspace = "my-workspace"
+mode = "proxy"
+posture = "observe"
+watch_channels = []
+proxy_poll_secs = 30

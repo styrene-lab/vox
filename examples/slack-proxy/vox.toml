@@ -1,0 +1,22 @@
+# Vox Slack proxy mode — monitor the operator's channels.
+#
+# Uses a user OAuth token (xoxp-*) instead of a bot token.
+# Reads messages from all channels the user is in (or a specific set).
+# Read-only by default; set posture = "participate" to allow sending.
+#
+# Find your Slack user ID:
+#   Click your profile photo > Profile > ... > Copy member ID
+
+[slack]
+workspace = "my-workspace"
+mode = "proxy"
+posture = "observe"
+
+# Channels to watch. Empty = auto-discover all joined channels.
+watch_channels = []
+
+# How often to poll for new messages (seconds).
+proxy_poll_secs = 30
+
+# How often to rediscover channels when watch_channels is empty (seconds).
+channel_refresh_secs = 300

@@ -1,0 +1,35 @@
+# Shared image for both Slack bot and proxy containers.
+# Same binaries, different config + secrets at runtime.
+#
+# Pre-build:
+#   cargo build --release -p vox --features slack
+#   cargo build --release -p omegon   # from omegon repo
+#   cp target/release/vox deploy/slack-dual/bin/vox
+#   cp <omegon>/target/release/omegon deploy/slack-dual/bin/omegon
+#
+# Build:
+#   podman build -t slack-agent deploy/slack-dual
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY bin/omegon /usr/local/bin/omegon
+RUN chmod +x /usr/local/bin/omegon
+
+RUN mkdir -p /data/omegon/extensions/vox/bin
+COPY bin/vox /data/omegon/extensions/vox/bin/vox
+RUN chmod +x /data/omegon/extensions/vox/bin/vox
+COPY manifest.toml /data/omegon/extensions/vox/manifest.toml
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV OMEGON_HOME=/data/omegon
+ENV RUST_LOG=info
+
+EXPOSE 7842
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]

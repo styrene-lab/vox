@@ -1,0 +1,56 @@
+# Slack agent: omegon daemon + vox Slack connector.
+#
+# Requires pre-built binaries staged in bin/:
+#
+#   # From vox repo root:
+#   cargo build --release -p vox --features slack
+#   cp target/release/vox examples/slack/bin/vox
+#
+#   # From omegon repo:
+#   cargo build --release -p omegon
+#   cp target/release/omegon examples/slack/bin/omegon
+#
+# Build:
+#   podman build -t slack-agent examples/slack
+#
+# Run:
+#   podman run --rm -it \
+#     -e ANTHROPIC_API_KEY=sk-... \
+#     -e VOX_SLACK_BOT_TOKEN=xoxb-... \
+#     -e VOX_SLACK_APP_TOKEN=xapp-... \
+#     -e VOX_SLACK_OPERATORS=YOUR_USER_ID \
+#     slack-agent
+#
+# All config is overridable via env vars — see entrypoint.sh.
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Omegon daemon
+COPY bin/omegon /usr/local/bin/omegon
+RUN chmod +x /usr/local/bin/omegon
+
+# Vox extension (installed into omegon's extension directory)
+RUN mkdir -p /data/omegon/extensions/vox/bin
+COPY bin/vox /data/omegon/extensions/vox/bin/vox
+RUN chmod +x /data/omegon/extensions/vox/bin/vox
+COPY manifest.toml /data/omegon/extensions/vox/manifest.toml
+
+# Default vox config (overridden by env vars at runtime)
+RUN mkdir -p /root/.config/vox
+COPY vox.toml /root/.config/vox/vox.toml
+
+# Entrypoint handles secrets, config gen, and daemon startup
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV OMEGON_HOME=/data/omegon
+ENV VOX_CONFIG=/etc/vox/vox.toml
+ENV RUST_LOG=info
+
+EXPOSE 7842
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]

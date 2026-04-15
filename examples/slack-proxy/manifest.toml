@@ -1,0 +1,16 @@
+[extension]
+name = "vox"
+version = "0.1.0"
+description = "Slack proxy connector for omegon"
+
+[runtime]
+type = "native"
+binary = "bin/vox"
+
+[startup]
+ping_method = "get_tools"
+timeout_ms = 10000
+
+[secrets]
+required = []
+optional = ["VOX_SLACK_USER_TOKEN"]

@@ -1,0 +1,22 @@
+# Vox Slack connector configuration
+#
+# Access control:
+#   operators       — Slack user IDs with full instruction authority
+#   operator_groups — Slack User Group IDs (e.g. "S0615G0PL") granting operator trust
+#                     Resolved at startup via usergroups.users.list — no per-message API calls
+#   allowed_users   — who can interact at all (empty = everyone)
+#   require_mention — must @mention bot in channels (DMs always pass)
+#
+# Find your Slack user ID:
+#   Click your profile photo > Profile > ⋮ > Copy member ID
+#
+# Find a User Group ID:
+#   Slack API > usergroups.list, or use the admin dashboard
+
+[slack]
+workspace = "my-workspace"
+require_mention = true
+operators = []
+# operator_groups = []
+# allowed_users = []
+# default_channel = "C0123456789"

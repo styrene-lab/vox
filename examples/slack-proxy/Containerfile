@@ -1,0 +1,51 @@
+# Slack proxy agent: omegon daemon + vox Slack proxy connector.
+#
+# Monitors the operator's Slack channels and surfaces messages to the agent.
+# Read-only by default; set VOX_SLACK_POSTURE=participate to allow sending.
+#
+# Requires pre-built binaries staged in bin/:
+#
+#   # From vox repo root:
+#   cargo build --release -p vox --features slack
+#   cp target/release/vox examples/slack-proxy/bin/vox
+#
+#   # From omegon repo:
+#   cargo build --release -p omegon
+#   cp target/release/omegon examples/slack-proxy/bin/omegon
+#
+# Build:
+#   podman build -t slack-proxy examples/slack-proxy
+#
+# Run:
+#   podman run --rm -it \
+#     -e ANTHROPIC_API_KEY=sk-... \
+#     -e VOX_SLACK_USER_TOKEN=xoxp-... \
+#     slack-proxy
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY bin/omegon /usr/local/bin/omegon
+RUN chmod +x /usr/local/bin/omegon
+
+RUN mkdir -p /data/omegon/extensions/vox/bin
+COPY bin/vox /data/omegon/extensions/vox/bin/vox
+RUN chmod +x /data/omegon/extensions/vox/bin/vox
+COPY manifest.toml /data/omegon/extensions/vox/manifest.toml
+
+RUN mkdir -p /root/.config/vox
+COPY vox.toml /root/.config/vox/vox.toml
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV OMEGON_HOME=/data/omegon
+ENV VOX_CONFIG=/etc/vox/vox.toml
+ENV RUST_LOG=info
+
+EXPOSE 7842
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]

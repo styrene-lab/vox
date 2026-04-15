@@ -1,0 +1,10 @@
+# Dedicated Slack bot — responds to users in channels.
+# Uses bot + app tokens, Socket Mode WebSocket.
+
+[slack]
+workspace = "my-workspace"
+mode = "bot"
+require_mention = true
+operators = []
+# operator_groups = []
+# allowed_users = []
