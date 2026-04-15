@@ -12,11 +12,12 @@ path = "src/main.rs"
 default = []
 signal = ["dep:vox-signal"]
 email = ["dep:vox-email"]
-lxmf = ["dep:vox-lxmf"]
+# lxmf: disabled until styrene-rs crates are published to crates.io
+# lxmf = ["dep:vox-lxmf"]
 voice = ["dep:vox-voice"]
 slack = ["dep:vox-slack"]
 discord = ["dep:vox-discord"]
-all = ["signal", "email", "lxmf", "voice", "slack", "discord"]
+all = ["signal", "email", "voice", "slack", "discord"]
 
 [dependencies]
 vox-core = { path = "../vox-core" }
@@ -37,7 +38,8 @@ tokio-util = "0.7"
 # Interactive omegon users never pull these; only daemon/OCI builds opt in.
 vox-signal = { path = "../vox-signal", optional = true }
 vox-email = { path = "../vox-email", optional = true }
-vox-lxmf = { path = "../vox-lxmf", optional = true }
+# vox-lxmf: disabled until styrene-rs crates are published
+# vox-lxmf = { path = "../vox-lxmf", optional = true }
 vox-voice = { path = "../vox-voice", optional = true }
 vox-slack = { path = "../vox-slack", optional = true }
 vox-discord = { path = "../vox-discord", optional = true }

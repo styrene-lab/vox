@@ -1,3 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["vox-core", "vox", "vox-signal", "vox-email", "vox-lxmf", "vox-voice", "vox-slack", "vox-discord"]
+members = ["vox-core", "vox", "vox-signal", "vox-email", "vox-voice", "vox-slack", "vox-discord"]
+# vox-lxmf excluded: depends on unpublished styrene-rs crates (path deps).
+# Build it explicitly with: cargo build -p vox --features lxmf
+# It will be added back to workspace members when styrene-rs is on crates.io.
+exclude = ["vox-lxmf"]

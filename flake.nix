@@ -9,7 +9,7 @@
   };
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
 
     crane = {
@@ -35,13 +35,20 @@
           else if self ? dirtyShortRev then self.dirtyShortRev
           else "unknown";
 
-        # Crane source filtering — Rust sources + manifest.toml + config
+        # Crane source filtering — Rust sources + config, excluding vox-lxmf
+        # (vox-lxmf has path deps on unpublished styrene-rs crates)
         src = pkgs.lib.cleanSourceWith {
           src = craneLib.path ./.;
           filter = path: type:
-            (craneLib.filterCargoSources path type)
-            || builtins.match ".*\\.toml$" path != null
-            || builtins.match ".*/deploy/.*" path != null;
+            let
+              relPath = pkgs.lib.removePrefix (toString ./.) (toString path);
+            in
+            !(pkgs.lib.hasPrefix "/vox-lxmf" relPath)
+            && (
+              (craneLib.filterCargoSources path type)
+              || builtins.match ".*\\.toml$" path != null
+              || builtins.match ".*/deploy/.*" path != null
+            );
         };
 
         commonArgs = {
@@ -49,20 +56,24 @@
           strictDeps = true;
           # vox uses rustls — no OpenSSL needed
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.darwin.apple_sdk.frameworks.Security
-            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+            pkgs.apple-sdk_15
           ];
         };
 
+        # Features that build from crates.io deps only.
+        # lxmf excluded: depends on unpublished styrene-rs path deps.
+        # voice excluded: stub connector, no external integration yet.
+        publishableFeatures = "discord,slack,signal,email";
+
         # Build deps first (cached separately from source changes)
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-          cargoExtraArgs = "--features all";
+          cargoExtraArgs = "--features ${publishableFeatures}";
         });
 
-        # Full vox binary with all connectors
+        # Vox binary with all publishable connectors
         vox = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
-          cargoExtraArgs = "--features all";
+          cargoExtraArgs = "--features ${publishableFeatures}";
         });
 
         # OCI images (Linux only)
@@ -84,13 +95,13 @@
         checks = {
           vox-clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
-            cargoExtraArgs = "--features all";
+            cargoExtraArgs = "--features ${publishableFeatures}";
             cargoClippyExtraArgs = "-- --deny warnings";
           });
 
           vox-tests = craneLib.cargoTest (commonArgs // {
             inherit cargoArtifacts;
-            cargoExtraArgs = "--features all";
+            cargoExtraArgs = "--features ${publishableFeatures}";
           });
         };
 
