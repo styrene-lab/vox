@@ -609,13 +609,35 @@ async fn run_bridge(
         "vox bridge started — polling connectors and pushing to daemon"
     );
 
+    let mut consecutive_failures: u32 = 0;
+    const MAX_BACKOFF_SECS: u64 = 60;
+
     loop {
+        // Exponential backoff on consecutive daemon push failures:
+        // base poll interval + 2^failures seconds, capped at MAX_BACKOFF_SECS.
+        let backoff = if consecutive_failures > 0 {
+            let delay_secs = (1u64 << consecutive_failures.min(6)).min(MAX_BACKOFF_SECS);
+            std::time::Duration::from_secs(delay_secs)
+        } else {
+            std::time::Duration::ZERO
+        };
+
         tokio::select! {
             _ = cancel.cancelled() => {
                 tracing::info!("vox bridge shutting down");
                 return;
             }
             _ = interval.tick() => {}
+        }
+
+        if !backoff.is_zero() {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    tracing::info!("vox bridge shutting down");
+                    return;
+                }
+                _ = tokio::time::sleep(backoff) => {}
+            }
         }
 
         let new_messages = vox.registry.poll_all().await;
@@ -633,6 +655,7 @@ async fn run_bridge(
 
         let batch_size = pending.len().min(BRIDGE_MAX_EVENTS_PER_CYCLE);
         let batch: Vec<_> = pending.drain(..batch_size).collect();
+        let mut batch_had_failure = false;
 
         for msg in &batch {
             let session_key = vox_core::SessionKey::from_inbound(msg);
@@ -685,11 +708,25 @@ async fn run_bridge(
                         session = %session_key,
                         "daemon rejected event"
                     );
+                    batch_had_failure = true;
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to push event to daemon");
+                    batch_had_failure = true;
                 }
             }
+        }
+
+        if batch_had_failure {
+            consecutive_failures = consecutive_failures.saturating_add(1);
+            if consecutive_failures == 1 {
+                tracing::warn!("daemon push failures detected — enabling exponential backoff");
+            }
+        } else {
+            if consecutive_failures > 0 {
+                tracing::info!("daemon push succeeded — backoff reset");
+            }
+            consecutive_failures = 0;
         }
     }
 }
