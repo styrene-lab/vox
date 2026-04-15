@@ -692,6 +692,11 @@ pub struct SlackConfig {
     /// Operator user IDs — full instruction authority. See DiscordConfig.operators.
     #[serde(default)]
     pub operators: Vec<String>,
+    /// Operator Slack User Group IDs (e.g. "S0615G0PL"). Members of these
+    /// groups get operator trust. Resolved at connector startup via
+    /// usergroups.users.list API — no per-message API calls.
+    #[serde(default)]
+    pub operator_groups: Vec<String>,
 }
 
 fn default_true() -> bool {

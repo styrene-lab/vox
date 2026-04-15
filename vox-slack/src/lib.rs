@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -71,6 +71,9 @@ struct SlackState {
     inbox: VecDeque<InboundMessage>,
     status: ConnectorStatus,
     bot_user_id: Option<String>,
+    /// Cached set of user IDs with operator trust. Built at startup from
+    /// config.operators + resolved config.operator_groups membership.
+    operator_user_ids: HashSet<String>,
 }
 
 /// Slack connector using Socket Mode (WebSocket) for receiving events and
@@ -121,6 +124,7 @@ impl SlackConnector {
                 inbox: VecDeque::new(),
                 status,
                 bot_user_id: None,
+                operator_user_ids: HashSet::new(),
             })),
             notify: Arc::new(Notify::new()),
         }
@@ -142,6 +146,38 @@ impl SlackConnector {
 
         // Resolve bot user ID for mention filtering
         self.resolve_bot_identity(bot_token).await;
+
+        // Build operator user ID set: explicit IDs + resolved usergroup members
+        {
+            let mut op_ids: HashSet<String> =
+                self.config.operators.iter().cloned().collect();
+
+            for group_id in &self.config.operator_groups {
+                match self.resolve_usergroup_members(bot_token, group_id).await {
+                    Ok(members) => {
+                        tracing::info!(
+                            group = %group_id,
+                            members = members.len(),
+                            "resolved slack operator group"
+                        );
+                        op_ids.extend(members);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            group = %group_id,
+                            error = %e,
+                            "failed to resolve operator group — group members won't have operator trust"
+                        );
+                    }
+                }
+            }
+
+            if !op_ids.is_empty() {
+                tracing::info!(count = op_ids.len(), "slack operator user IDs resolved");
+            }
+
+            self.state.lock().await.operator_user_ids = op_ids;
+        }
 
         let state = self.state.clone();
         let notify = self.notify.clone();
@@ -188,6 +224,47 @@ impl SlackConnector {
             }
             Err(e) => tracing::warn!(error = %e, "failed to resolve bot identity"),
         }
+    }
+
+    /// Fetch members of a Slack User Group via usergroups.users.list API.
+    async fn resolve_usergroup_members(
+        &self,
+        bot_token: &str,
+        group_id: &str,
+    ) -> std::result::Result<Vec<String>, String> {
+        let resp = self
+            .http
+            .get("https://slack.com/api/usergroups.users.list")
+            .bearer_auth(bot_token)
+            .query(&[("usergroup", group_id)])
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("response parse failed: {e}"))?;
+
+        if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            return Err(format!("API error: {err}"));
+        }
+
+        let users = body
+            .get("users")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(users)
     }
 
     async fn post_message(
@@ -359,8 +436,9 @@ async fn socket_mode_loop(
             // Process events_api envelopes
             if envelope.envelope_type == "events_api" {
                 if let Ok(callback) = serde_json::from_value::<EventCallback>(envelope.payload) {
+                    let op_ids = { state.lock().await.operator_user_ids.clone() };
                     if let Some(inbound) =
-                        parse_slack_event(&callback.event, &config, bot_user_id.as_deref())
+                        parse_slack_event(&callback.event, &config, bot_user_id.as_deref(), &op_ids)
                     {
                         let mut s = state.lock().await;
                         if s.inbox.len() >= MAX_INBOX_SIZE {
@@ -415,6 +493,7 @@ fn parse_slack_event(
     event: &serde_json::Value,
     config: &SlackConfig,
     bot_user_id: Option<&str>,
+    operator_user_ids: &HashSet<String>,
 ) -> Option<InboundMessage> {
     let event_type = event.get("type")?.as_str()?;
 
@@ -488,7 +567,7 @@ fn parse_slack_event(
             icon_emoji: None,
             unfurl: false,
         },
-        trust_level: if config.operators.contains(&user.to_string()) {
+        trust_level: if operator_user_ids.contains(user) {
             vox_core::TrustLevel::Operator
         } else {
             vox_core::TrustLevel::User
@@ -621,7 +700,12 @@ mod tests {
             require_mention: true,
             allowed_users: vec![],
             operators: vec![],
+            operator_groups: vec![],
         }
+    }
+
+    fn empty_ops() -> HashSet<String> {
+        HashSet::new()
     }
 
     fn message_event(user: &str, text: &str, channel: &str, ts: &str) -> serde_json::Value {
@@ -638,7 +722,7 @@ mod tests {
     #[test]
     fn parse_basic_mention() {
         let event = message_event("U123", "<@BOT1> hello", "C456", "1234.5678");
-        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"));
+        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"), &empty_ops());
         assert!(msg.is_some());
         let msg = msg.unwrap();
         assert_eq!(msg.sender.id, "U123");
@@ -648,7 +732,7 @@ mod tests {
     #[test]
     fn skip_without_mention_when_required() {
         let event = message_event("U123", "hello without mention", "C456", "1234.5678");
-        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"));
+        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"), &empty_ops());
         assert!(msg.is_none());
     }
 
@@ -656,7 +740,7 @@ mod tests {
     fn dm_bypasses_mention_check() {
         let mut event = message_event("U123", "hello", "D456", "1234.5678");
         event["channel_type"] = serde_json::json!("im");
-        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"));
+        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"), &empty_ops());
         assert!(msg.is_some());
     }
 
@@ -664,7 +748,7 @@ mod tests {
     fn skip_bot_messages() {
         let mut event = message_event("U123", "bot says hi", "C456", "1234.5678");
         event["bot_id"] = serde_json::json!("B123");
-        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"));
+        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"), &empty_ops());
         assert!(msg.is_none());
     }
 
@@ -672,7 +756,7 @@ mod tests {
     fn skip_subtypes() {
         let mut event = message_event("U123", "edited", "C456", "1234.5678");
         event["subtype"] = serde_json::json!("message_changed");
-        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"));
+        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"), &empty_ops());
         assert!(msg.is_none());
     }
 
@@ -683,7 +767,7 @@ mod tests {
             ..slack_config()
         };
         let event = message_event("U123", "<@BOT1> hello", "C456", "1234.5678");
-        let msg = parse_slack_event(&event, &config, Some("BOT1"));
+        let msg = parse_slack_event(&event, &config, Some("BOT1"), &empty_ops());
         assert!(msg.is_none());
     }
 
@@ -694,14 +778,14 @@ mod tests {
             ..slack_config()
         };
         let event = message_event("U123", "<@BOT1> hello", "C456", "1234.5678");
-        let msg = parse_slack_event(&event, &config, Some("BOT1"));
+        let msg = parse_slack_event(&event, &config, Some("BOT1"), &empty_ops());
         assert!(msg.is_some());
     }
 
     #[test]
     fn empty_after_mention_strip_is_skipped() {
         let event = message_event("U123", "<@BOT1>", "C456", "1234.5678");
-        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"));
+        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"), &empty_ops());
         assert!(msg.is_none());
     }
 
@@ -709,7 +793,7 @@ mod tests {
     fn thread_ts_becomes_thread_id() {
         let mut event = message_event("U123", "<@BOT1> in thread", "C456", "1234.5678");
         event["thread_ts"] = serde_json::json!("1111.2222");
-        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1")).unwrap();
+        let msg = parse_slack_event(&event, &slack_config(), Some("BOT1"), &empty_ops()).unwrap();
         assert_eq!(msg.thread_id, Some("1111.2222".into()));
     }
 }
