@@ -107,16 +107,18 @@ impl Vox {
         json!([
             {
                 "name": "vox_channels",
+                "label": "Vox Channels",
                 "description": "List all available communication channels and their status",
-                "input_schema": {
+                "parameters": {
                     "type": "object",
                     "properties": {},
                 }
             },
             {
                 "name": "vox_status",
+                "label": "Vox Status",
                 "description": "Get the connection status of one or all channels",
-                "input_schema": {
+                "parameters": {
                     "type": "object",
                     "properties": {
                         "channel": {
@@ -128,8 +130,9 @@ impl Vox {
             },
             {
                 "name": "vox_send",
+                "label": "Vox Send",
                 "description": "Send a message through a communication channel. Supports email (with subject, CC/BCC), Signal (with groups, disappearing messages), Slack (with channels, threads), LXMF (mesh/Reticulum), and voice (TTS playback).",
-                "input_schema": {
+                "parameters": {
                     "type": "object",
                     "properties": {
                         "channel": {
@@ -207,8 +210,9 @@ impl Vox {
             },
             {
                 "name": "vox_poll",
+                "label": "Vox Poll",
                 "description": "Poll for new inbound messages from one or all channels",
-                "input_schema": {
+                "parameters": {
                     "type": "object",
                     "properties": {
                         "channel": {
@@ -220,16 +224,18 @@ impl Vox {
             },
             {
                 "name": "vox_route",
+                "label": "Vox Route",
                 "description": "Poll all channels and return messages annotated with session routing keys and reply addresses. Each message includes a session_key (channel + sender + thread) for session routing and a reply_address for sending responses back to the originating conversation. This is the primary ingress tool for daemon mode.",
-                "input_schema": {
+                "parameters": {
                     "type": "object",
                     "properties": {},
                 }
             },
             {
                 "name": "vox_reply",
+                "label": "Vox Reply",
                 "description": "Reply to a routed message using its reply_address. The reply_address contains all routing information (channel, envelope, thread, hints) so the agent only needs to provide text content.",
-                "input_schema": {
+                "parameters": {
                     "type": "object",
                     "properties": {
                         "reply_address": {
