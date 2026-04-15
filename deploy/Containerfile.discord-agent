@@ -1,0 +1,61 @@
+# Omegon + Vox discord agent container.
+#
+# Pre-built binaries are copied in (not built inside the container).
+# Build them first:
+#   cargo zigbuild --release --target aarch64-unknown-linux-gnu -p vox --features all
+#   cd ../omegon/core && cargo zigbuild --release --target aarch64-unknown-linux-gnu -p omegon
+#
+# Then build the image:
+#   podman build -f deploy/Containerfile.discord-agent \
+#     --build-arg OMEGON_BIN=../omegon/core/target/aarch64-unknown-linux-gnu/release/omegon \
+#     --build-arg VOX_BIN=target/aarch64-unknown-linux-gnu/release/vox \
+#     -t discord-agent .
+#
+# Run:
+#   podman run --rm -it \
+#     -e ANTHROPIC_API_KEY=sk-... \
+#     -e VOX_DISCORD_BOT_TOKEN=... \
+#     discord-agent
+
+ARG OMEGON_BIN=../omegon/core/target/aarch64-unknown-linux-gnu/release/omegon
+ARG VOX_BIN=target/aarch64-unknown-linux-gnu/release/vox
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Omegon daemon binary
+COPY ${OMEGON_BIN} /usr/local/bin/omegon
+RUN chmod +x /usr/local/bin/omegon
+
+# Vox extension binary
+RUN mkdir -p /data/omegon/extensions/vox/bin
+COPY ${VOX_BIN} /data/omegon/extensions/vox/bin/vox
+RUN chmod +x /data/omegon/extensions/vox/bin/vox
+
+# Vox extension manifest (binary path relative to extension dir)
+COPY deploy/manifest.container.toml /data/omegon/extensions/vox/manifest.toml
+
+# Vox runtime config (discord-only for this image)
+COPY deploy/discord-agent.toml /etc/vox/vox.toml
+
+# Entrypoint script
+COPY deploy/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Isolated omegon state
+ENV OMEGON_HOME=/data/omegon
+ENV VOX_CONFIG=/etc/vox/vox.toml
+ENV RUST_LOG=info
+
+# Daemon control port
+EXPOSE 7842
+
+# Health check against omegon's readiness probe
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -sf http://127.0.0.1:7842/api/healthz || exit 1
+
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,24 @@
+[extension]
+name = "vox"
+version = "0.1.0"
+description = "Unified communication connector for omegon"
+
+[runtime]
+type = "native"
+binary = "bin/vox"
+
+[startup]
+ping_method = "get_tools"
+timeout_ms = 10000
+
+[secrets]
+required = []
+optional = [
+    "VOX_DISCORD_BOT_TOKEN",
+    "VOX_SLACK_BOT_TOKEN",
+    "VOX_SLACK_APP_TOKEN",
+    "VOX_SIGNAL_PASSWORD",
+    "VOX_EMAIL_PASSWORD",
+    "VOX_MATRIX_PASSWORD",
+    "VOX_LXMF_IDENTITY",
+]
