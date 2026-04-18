@@ -1,0 +1,40 @@
+# Session Log
+
+Append-only record of development sessions. Read recent entries for context.
+
+## 2026-04-18 — Overnight Reviewer Agent: Local → K8s
+
+### Context
+Standing up the overnight code reviewer agent end-to-end: from broken local config to validated k8s CronJob deployment on brutus.
+
+### Completed
+- Fixed agent startup blockers: mind facts schema (`fact`→`content`+`confidence`), vox extension manifest path, vox binary SDK mismatch (rebuilt), stale daemon processes
+- Switched LLM provider from OpenRouter (no credits) to openai-codex OAuth
+- Fixed vox_send Discord delivery: rebuilt vox with `--features discord`, created vox.toml at default path, added workspace/channel_id/body params to prompt and PERSONA.md
+- Clarified "read-only" persona constraint so agent posts findings via vox_send
+- Dropped nex from review targets (read tool sandboxed to repo root)
+- Fixed 3 code issues from the reviewer's own findings:
+  - `vox/src/main.rs`: requeue failed bridge events instead of dropping
+  - `vox-core/src/lib.rs`: only default config on NotFound, surface other errors
+  - `vox-voice/src/audio.rs`: log audio capture drops instead of silent discard
+- Created omegon-agent Helm chart (Deployment/CronJob modes, ConfigMap vox.toml, secret refs)
+- Created Containerfile + Argo Workflow for on-cluster OCI builds (kaniko)
+- Built and pushed `ghcr.io/styrene-lab/omegon-agents:latest` via Argo on brutus
+- Deployed to brutus k3s via Helm, validated Discord delivery from cluster
+- Created oneshot entrypoint with git credential helper, repo cloning, prompt injection, graceful shutdown
+- Launchd job set to hourly on macOS (`com.styrene.overnight-reviewer`)
+
+### Decisions
+- Oneshot entrypoint (`entrypoint-oneshot.sh`) separate from daemon entrypoint — CronJob starts daemon, submits prompt, waits for idle, exits
+- Git auth via credential helper store (`~/.git-credentials`) so all git ops (clone, fetch, submodule) work transparently
+- `rust:bookworm` build + `debian:trixie-slim` runtime to match glibc versions
+- Split Argo Workflow: cargo builds in Rust containers, kaniko only assembles final slim image (avoids kaniko snapshot overhead on large target/ dirs)
+- PVC ReadWriteOnce → sequential build steps (omegon then vox, not parallel)
+- Review repos passed as env var (`REVIEW_REPOS=styrene-lab/vox`) and cloned at runtime
+
+### Open Threads
+- Multi-repo review: need to solve read tool sandbox for cross-repo access, or run one agent per repo
+- Vault integration: secrets currently from manual k8s Secrets, need VaultStaticSecret + Vault role for omegon-agents SA
+- GitHub App token: should replace PAT for fine-grained repo access and rotation
+- CronJob timeout: monitor script polls readyz but the 600s timeout fires even after agent completes — needs tuning
+- Build caching: each Argo build does a fresh cargo compile (~15min). Cargo registry/build cache PVC would cut this significantly
