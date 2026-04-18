@@ -74,6 +74,10 @@ containers:
       - name: REVIEW_CHANNEL
         value: {{ .Values.reviewChannel | quote }}
       {{- end }}
+      {{- if .Values.reviewRepos }}
+      - name: REVIEW_REPOS
+        value: {{ .Values.reviewRepos | quote }}
+      {{- end }}
     volumeMounts:
       - name: vox-config
         mountPath: /root/.config/vox/vox.toml
@@ -81,6 +85,11 @@ containers:
       {{- if .Values.secrets.authJson.enabled }}
       - name: auth-json
         mountPath: /config/omegon
+        readOnly: true
+      {{- end }}
+      {{- if .Values.secrets.gitToken }}
+      - name: git-token
+        mountPath: /ghcr
         readOnly: true
       {{- end }}
     resources:
@@ -96,6 +105,14 @@ volumes:
       items:
         - key: {{ .Values.secrets.authJson.key }}
           path: auth.json
+  {{- end }}
+  {{- if .Values.secrets.gitToken }}
+  - name: git-token
+    secret:
+      secretName: {{ .Values.secrets.gitToken.secretName }}
+      items:
+        - key: {{ .Values.secrets.gitToken.key | default "password" }}
+          path: password
   {{- end }}
 {{- with .Values.nodeSelector }}
 nodeSelector:

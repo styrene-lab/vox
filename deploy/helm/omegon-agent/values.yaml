@@ -27,6 +27,9 @@ agent:
 # Discord channel for review findings (oneshot/cronjob mode)
 reviewChannel: ""
 
+# Repos to clone and review (comma-separated org/repo, e.g. "styrene-lab/vox,styrene-lab/nex")
+reviewRepos: ""
+
 # Vox connector configuration (generates vox.toml in ConfigMap)
 vox:
   discord:
@@ -52,6 +55,13 @@ secrets:
   # Vault path (when provider=vault)
   vaultPath: ""
   vaultRole: ""
+
+  # GitHub token for git clone/fetch (mounted at /ghcr/password)
+  # Reuse the GHCR pull secret or a dedicated GitHub PAT secret.
+  # The token needs repo read access for private repos and submodules.
+  gitToken:
+    secretName: ""
+    key: password
 
   # Mount auth.json from a Secret (for OAuth tokens)
   authJson:

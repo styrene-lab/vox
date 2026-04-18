@@ -65,13 +65,60 @@ if [ -f "$AUTH_JSON" ]; then
     echo "  auth.json mounted"
 fi
 
+# ── Git auth ──────────────────────────────────────────────────────────
+# Set up credential helper so all git operations (clone, fetch, submodule)
+# authenticate transparently. Token resolution order:
+#   1. GITHUB_TOKEN env var
+#   2. /ghcr/password mount (from ghcr-secret or dedicated git token secret)
+GIT_TOKEN="${GITHUB_TOKEN:-}"
+if [ -z "$GIT_TOKEN" ] && [ -f /ghcr/password ]; then
+    GIT_TOKEN="$(cat /ghcr/password)"
+fi
+
+if [ -n "$GIT_TOKEN" ]; then
+    # Store-based credential helper for all github.com operations
+    git config --global credential.helper store
+    echo "https://x-access-token:${GIT_TOKEN}@github.com" > "${HOME}/.git-credentials"
+    chmod 600 "${HOME}/.git-credentials"
+    git config --global url."https://github.com/".insteadOf "git@github.com:"
+    echo "  git credentials configured"
+fi
+
+# ── Clone target repos ────────────────────────────────────────────────
+# REVIEW_REPOS: comma-separated list of org/repo (e.g. "styrene-lab/vox,styrene-lab/nex")
+if [ -n "${REVIEW_REPOS:-}" ]; then
+
+    echo "Cloning target repos..."
+    IFS=','
+    REPO_CONTEXT=""
+    for repo in $REVIEW_REPOS; do
+        repo=$(echo "$repo" | xargs)  # trim
+        repo_name=$(echo "$repo" | sed 's|.*/||')
+        repo_dir="/workspace/${repo_name}"
+        git clone --depth 1 --recurse-submodules "https://github.com/${repo}.git" "$repo_dir" 2>&1 || echo "  warning: clone failed for ${repo}"
+        if [ -d "$repo_dir/.git" ]; then
+            recent=$(cd "$repo_dir" && git log --oneline --since="24 hours ago" 2>/dev/null || echo "(no recent commits)")
+            REPO_CONTEXT="${REPO_CONTEXT}
+--- ${repo_name} (${repo_dir}) ---
+Recent commits (24h):
+${recent}
+"
+            echo "  cloned ${repo} -> ${repo_dir}"
+        fi
+    done
+    unset IFS
+fi
+
 # ── Build prompt ──────────────────────────────────────────────────────
 if [ -z "${REVIEW_PROMPT:-}" ]; then
     REVIEW_PROMPT="You are running as the overnight reviewer. Today's date is $(date +%Y-%m-%d).
 
+Target repositories and recent activity:
+${REPO_CONTEXT:-No repositories configured. Review the workspace at /workspace.}
+
 Your task:
-1. Read the codebase starting with recently changed files.
-2. Identify 2-3 actionable findings (fewer if the code is clean).
+1. For each repo, read the codebase. Start with recently changed files if there are commits in the last 24h, otherwise pick a module to cold-review.
+2. Identify 2-3 actionable findings per repo (fewer if the code is clean).
 3. Post your findings to Discord using vox_send."
 
     if [ -n "$REVIEW_CHANNEL" ] && [ -n "$REVIEW_GUILD" ]; then
