@@ -1,0 +1,63 @@
+# Multi-stage build: compiles natively in x86_64 container.
+# No cross-compilation needed — builds omegon and vox from source.
+#
+# Build context is black-meridian/ so both omegon and styrene-lab/vox are available:
+#   cd ~/workspace/black-meridian
+#   podman build --platform linux/amd64 \
+#     -f styrene-lab/vox/deploy/Containerfile.overnight-reviewer-multistage \
+#     -t ghcr.io/styrene-lab/omegon-agents:latest .
+
+# ── Stage 1: Build ────────────────────────────────────────────────
+FROM --platform=linux/amd64 rust:1.87-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pkg-config libssl-dev cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy omegon workspace (vox depends on omegon-traits via path)
+COPY omegon/core /build/omegon/core
+
+# Copy vox workspace
+COPY styrene-lab/vox /build/styrene-lab/vox
+
+# Build omegon
+WORKDIR /build/omegon/core
+RUN cargo build --release -p omegon
+
+# Build vox with discord
+WORKDIR /build/styrene-lab/vox
+RUN cargo build --release -p vox --features discord
+
+# ── Stage 2: Runtime ─────────────────────────────────────────────
+FROM --platform=linux/amd64 debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Omegon binary
+COPY --from=builder /build/omegon/core/target/release/omegon /usr/local/bin/omegon
+
+# Vox extension
+RUN mkdir -p /data/omegon/extensions/vox/bin
+COPY --from=builder /build/styrene-lab/vox/target/release/vox /data/omegon/extensions/vox/bin/vox
+COPY styrene-lab/vox/deploy/manifest.container.toml /data/omegon/extensions/vox/manifest.toml
+
+# Agent catalog
+COPY styrene-lab/vox/deploy/catalog/styrene.overnight-reviewer/ /data/omegon/catalog/styrene.overnight-reviewer/
+
+# Entrypoint
+COPY styrene-lab/vox/deploy/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+RUN mkdir -p /root/.config/vox /workspace
+
+ENV OMEGON_HOME=/data/omegon
+ENV RUST_LOG=info
+
+EXPOSE 7842
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--agent", "styrene.overnight-reviewer", "--model", "openai-codex:gpt-5.4"]

@@ -1,0 +1,6 @@
+[discord]
+require_mention = true
+guild_id = "1113581684231778366"
+operators = []
+# operator_roles = []
+# allowed_users = []

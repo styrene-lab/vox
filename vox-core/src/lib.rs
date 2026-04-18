@@ -584,10 +584,15 @@ pub struct VoxConfig {
 
 impl VoxConfig {
     /// Load from a TOML file, returning default if file doesn't exist.
-    pub fn load(path: &std::path::Path) -> std::result::Result<Self, toml::de::Error> {
+    ///
+    /// Only treats `NotFound` as "use defaults". Other I/O errors (permission
+    /// denied, disk failures) are surfaced so bad deploys don't silently run
+    /// with an empty config.
+    pub fn load(path: &std::path::Path) -> std::result::Result<Self, String> {
         match std::fs::read_to_string(path) {
-            Ok(content) => toml::from_str(&content),
-            Err(_) => Ok(Self::default()),
+            Ok(content) => toml::from_str(&content).map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
         }
     }
 }
@@ -640,31 +645,102 @@ fn default_rns_config() -> String {
     "~/.reticulum".to_string()
 }
 
+/// Speech-to-text engine selection.
+///
+/// Tiered deployment:
+///   - Pi Zero 2W: Whisper (tiny Q4) or Vosk (lowest latency)
+///   - Pi 4B: Moonshine (causal streaming) or Whisper (distil-small Q4)
+///   - x86 server: Whisper (distil-large Q8)
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SttEngine {
+    /// whisper.cpp via whisper-rs — GGUF models, chunked sliding window.
+    /// Best quantization range (Q4-Q8), proven Rust bindings.
+    #[default]
+    Whisper,
+    /// Vosk via vosk crate — Kaldi-based, true native streaming.
+    /// Lowest latency, weakest accuracy. Best for command recognition.
+    Vosk,
+    /// Moonshine via ort — causal encoder, autoregressive decoder.
+    /// Purpose-built for edge (27-60M params). True streaming.
+    Moonshine,
+}
+
+/// Text-to-speech engine selection.
+///
+/// Tiered deployment:
+///   - Pi Zero 2W: Espeak (formant synthesis, near-instant)
+///   - Pi 4B: Piper medium quality via ONNX
+///   - x86 server: Piper high or Kokoro
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TtsEngine {
+    /// Piper via ort + espeakng-sys phonemizer — VITS ONNX models.
+    /// Natural quality, sentence-level streaming.
+    #[default]
+    Piper,
+    /// espeak-ng via espeakng-sys FFI — formant synthesis.
+    /// Robotic but instant. Universal fallback, also Piper's phonemizer.
+    Espeak,
+    /// Kokoro via ort — StyleTTS2-based, 82M params.
+    /// Highest quality for size. Community ONNX exports.
+    Kokoro,
+}
+
+/// Voice activity detection engine selection.
+///
+/// Silero requires ONNX Runtime (shared with Piper/Moonshine).
+/// WebRTC VAD is a lightweight C library for minimal deployments.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VadEngine {
+    /// Silero VAD v5 via ort — 2MB ONNX model, 32ms chunks.
+    /// ~189μs/chunk on x86, ~1-3ms on Pi 4B.
+    #[default]
+    Silero,
+    /// WebRTC VAD — lightweight C library, no ONNX dependency.
+    /// For minimal deployments (Pi Zero 2W) that avoid ONNX Runtime.
+    Webrtc,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct VoiceConfig {
-    /// STT engine: "whisper" (default) or "vosk".
-    #[serde(default = "default_stt_engine")]
-    pub stt_engine: String,
-    /// Path to STT model files (required for airgapped).
+    /// STT engine selection.
+    #[serde(default)]
+    pub stt_engine: SttEngine,
+    /// Path to STT model files.
     pub stt_model_path: String,
-    /// TTS engine: "piper" (default) or "sherpa-onnx".
-    #[serde(default = "default_tts_engine")]
-    pub tts_engine: String,
-    /// Path to TTS model/voice files (required for airgapped).
-    pub tts_model_path: String,
+
+    /// TTS engine selection.
+    #[serde(default)]
+    pub tts_engine: TtsEngine,
+    /// Path to TTS model/voice files. None is valid for Espeak (no model needed).
+    #[serde(default)]
+    pub tts_model_path: Option<String>,
+
+    /// Voice activity detection engine.
+    #[serde(default)]
+    pub vad_engine: VadEngine,
+    /// VAD speech probability threshold (0.0–1.0). Default 0.5.
+    #[serde(default = "default_vad_threshold")]
+    pub vad_threshold: f32,
+
     /// Audio input device name (None = system default).
     #[serde(default)]
     pub input_device: Option<String>,
     /// Audio output device name (None = system default).
     #[serde(default)]
     pub output_device: Option<String>,
+    /// Audio sample rate in Hz. Default 16000 (required by Whisper/Moonshine/Silero).
+    #[serde(default = "default_sample_rate")]
+    pub sample_rate: u32,
 }
 
-fn default_stt_engine() -> String {
-    "whisper".to_string()
+fn default_vad_threshold() -> f32 {
+    0.5
 }
-fn default_tts_engine() -> String {
-    "piper".to_string()
+fn default_sample_rate() -> u32 {
+    16000
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -1,0 +1,25 @@
+[agent]
+id = "styrene.discord-community-ollama"
+name = "Styrene Community Agent (Ollama Cloud)"
+version = "1.0.0"
+description = "Styrene project agent for Discord, powered by Ollama Cloud. Familiar with the styrene-lab ecosystem: omegon, vox, styrened, auspex, RNS/LXMF mesh networking, and edge device provisioning."
+domain = "coding"
+
+[persona]
+directive = "PERSONA.md"
+badge = "styrene"
+mind_facts = "mind/facts.jsonl"
+
+[[extensions]]
+name = "vox"
+version = ">=0.3.0"
+
+[settings]
+model = "ollama-cloud:llama4:scout"
+thinking_level = "low"
+context_class = "clan"
+max_turns = 50
+
+[secrets]
+required = ["OLLAMA_API_KEY"]
+optional = ["VOX_DISCORD_BOT_TOKEN", "GITHUB_TOKEN"]

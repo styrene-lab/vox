@@ -1,0 +1,19 @@
+{{- if eq .Values.mode "daemon" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "omegon-agent.fullname" . }}
+  labels:
+    {{- include "omegon-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "omegon-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "omegon-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- include "omegon-agent.podSpec" . | nindent 6 }}
+{{- end }}

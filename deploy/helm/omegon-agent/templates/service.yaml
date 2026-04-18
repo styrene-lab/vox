@@ -1,0 +1,17 @@
+{{- if eq .Values.mode "daemon" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "omegon-agent.fullname" . }}
+  labels:
+    {{- include "omegon-agent.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 7842
+      protocol: TCP
+      name: control
+  selector:
+    {{- include "omegon-agent.selectorLabels" . | nindent 4 }}
+{{- end }}

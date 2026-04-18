@@ -1,0 +1,6 @@
+apiVersion: v2
+name: omegon-agent
+description: Deploy an Omegon agent as a Deployment (daemon) or CronJob (oneshot)
+type: application
+version: 0.1.0
+appVersion: "0.15.26"

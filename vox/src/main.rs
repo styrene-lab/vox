@@ -660,12 +660,13 @@ async fn run_bridge(
         }
 
         let batch_size = pending.len().min(BRIDGE_MAX_EVENTS_PER_CYCLE);
+        // Take the batch but requeue on failure — don't drain until delivery succeeds.
         let batch: Vec<_> = pending.drain(..batch_size).collect();
-        let mut batch_had_failure = false;
+        let mut failed: Vec<vox_core::InboundMessage> = Vec::new();
 
-        for msg in &batch {
-            let session_key = vox_core::SessionKey::from_inbound(msg);
-            let reply_address = vox_core::ReplyAddress::from_inbound(msg);
+        for msg in batch {
+            let session_key = vox_core::SessionKey::from_inbound(&msg);
+            let reply_address = vox_core::ReplyAddress::from_inbound(&msg);
 
             let text: String = msg
                 .body
@@ -712,15 +713,21 @@ async fn run_bridge(
                     tracing::warn!(
                         status = %resp.status(),
                         session = %session_key,
-                        "daemon rejected event"
+                        "daemon rejected event — requeuing"
                     );
-                    batch_had_failure = true;
+                    failed.push(msg);
                 }
                 Err(e) => {
-                    tracing::error!(error = %e, "failed to push event to daemon");
-                    batch_had_failure = true;
+                    tracing::error!(error = %e, "failed to push event to daemon — requeuing");
+                    failed.push(msg);
                 }
             }
+        }
+
+        // Requeue failed messages at the front so they retry next cycle.
+        let batch_had_failure = !failed.is_empty();
+        for msg in failed.into_iter().rev() {
+            pending.push_front(msg);
         }
 
         if batch_had_failure {

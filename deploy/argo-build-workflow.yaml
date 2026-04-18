@@ -1,0 +1,166 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: omegon-agents-build-
+  namespace: argo
+spec:
+  serviceAccountName: ci-workflow-sa
+  entrypoint: build-and-push
+  activeDeadlineSeconds: 3600
+  podGC:
+    strategy: OnWorkflowSuccess
+  volumes:
+    - name: ghcr-auth
+      secret:
+        secretName: ghcr-secret
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+        storageClassName: local-path
+  templates:
+    - name: build-and-push
+      dag:
+        tasks:
+          - name: checkout
+            template: git-checkout
+          - name: build-omegon
+            depends: checkout
+            template: cargo-build-omegon
+          - name: build-vox
+            depends: build-omegon
+            template: cargo-build-vox
+          - name: push-image
+            depends: build-vox
+            template: kaniko-assemble
+
+    - name: git-checkout
+      container:
+        image: alpine/git:latest
+        command: [sh, -c]
+        args:
+          - |
+            set -euo pipefail
+            TOKEN=$(cat /ghcr/password)
+            git clone --depth 1 https://x-access-token:${TOKEN}@github.com/styrene-lab/omegon.git /workspace/omegon
+            git clone --depth 1 https://x-access-token:${TOKEN}@github.com/styrene-lab/vox.git /workspace/vox
+            echo "Checkout complete"
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: ghcr-auth
+            mountPath: /ghcr
+            readOnly: true
+
+    - name: cargo-build-omegon
+      container:
+        image: rust:bookworm
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev cmake && apt-get clean
+            cd /workspace/omegon/core
+            cargo build --release -p omegon 2>&1
+            cp target/release/omegon /workspace/omegon-bin
+            echo "omegon built: $(ls -lh /workspace/omegon-bin)"
+        resources:
+          requests:
+            cpu: "4"
+            memory: 8Gi
+          limits:
+            cpu: "16"
+            memory: 24Gi
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+
+    - name: cargo-build-vox
+      container:
+        image: rust:bookworm
+        command: [bash, -c]
+        args:
+          - |
+            set -euo pipefail
+            apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev cmake && apt-get clean
+            cd /workspace/vox
+            cargo build --release -p vox --features discord 2>&1
+            cp target/release/vox /workspace/vox-bin
+            echo "vox built: $(ls -lh /workspace/vox-bin)"
+        resources:
+          requests:
+            cpu: "4"
+            memory: 8Gi
+          limits:
+            cpu: "16"
+            memory: 24Gi
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+
+    - name: kaniko-assemble
+      container:
+        image: gcr.io/kaniko-project/executor:debug
+        command: [/busybox/sh, -c]
+        args:
+          - |
+            SERVER=$(cat /ghcr/server)
+            USER=$(cat /ghcr/username)
+            PASS=$(cat /ghcr/password)
+            AUTH=$(/busybox/echo -n "${USER}:${PASS}" | /busybox/base64)
+            mkdir -p /kaniko/.docker
+            /busybox/printf '{"auths":{"%s":{"auth":"%s"}}}' "$SERVER" "$AUTH" > /kaniko/.docker/config.json
+
+            mkdir -p /build-ctx/catalog
+            cp /pvc/omegon-bin /build-ctx/omegon
+            cp /pvc/vox-bin /build-ctx/vox
+            cp -r /pvc/vox/deploy/catalog/styrene.overnight-reviewer/* /build-ctx/catalog/
+            cp /pvc/vox/deploy/manifest.container.toml /build-ctx/manifest.toml
+            cp /pvc/vox/deploy/entrypoint.sh /build-ctx/entrypoint.sh
+
+            echo "=== build context ==="
+            ls -la /build-ctx/
+            ls -la /build-ctx/catalog/
+
+            printf '%s\n' \
+              'FROM debian:trixie-slim' \
+              'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq && apt-get clean' \
+              'COPY omegon /usr/local/bin/omegon' \
+              'RUN chmod +x /usr/local/bin/omegon' \
+              'RUN mkdir -p /data/omegon/extensions/vox/bin' \
+              'COPY vox /data/omegon/extensions/vox/bin/vox' \
+              'RUN chmod +x /data/omegon/extensions/vox/bin/vox' \
+              'COPY manifest.toml /data/omegon/extensions/vox/manifest.toml' \
+              'COPY catalog/ /data/omegon/catalog/styrene.overnight-reviewer/' \
+              'COPY entrypoint.sh /entrypoint.sh' \
+              'RUN chmod +x /entrypoint.sh && mkdir -p /root/.config/vox /workspace' \
+              'ENV OMEGON_HOME=/data/omegon' \
+              'ENV RUST_LOG=info' \
+              'EXPOSE 7842' \
+              'WORKDIR /workspace' \
+              'ENTRYPOINT ["/entrypoint.sh"]' \
+              'CMD ["--agent", "styrene.overnight-reviewer", "--model", "openai-codex:gpt-5.4"]' \
+              > /build-ctx/Dockerfile
+
+            /kaniko/executor \
+              --context=/build-ctx \
+              --dockerfile=/build-ctx/Dockerfile \
+              --destination=ghcr.io/styrene-lab/omegon-agents:latest \
+              --cache=false
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            cpu: "4"
+            memory: 4Gi
+        volumeMounts:
+          - name: workspace
+            mountPath: /pvc
+          - name: ghcr-auth
+            mountPath: /ghcr
+            readOnly: true

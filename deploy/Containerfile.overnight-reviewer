@@ -1,0 +1,60 @@
+# Overnight Code Reviewer — omegon + vox (discord) oneshot agent.
+#
+# Pre-build (aarch64 for Apple Silicon podman / k8s ARM nodes):
+#   cd omegon/core && cargo zigbuild --release --target aarch64-unknown-linux-gnu
+#   cd vox && cargo zigbuild --release --target aarch64-unknown-linux-gnu -p vox --features discord
+#   mkdir -p deploy/bin
+#   cp ../omegon/core/target/aarch64-unknown-linux-gnu/release/omegon deploy/bin/
+#   cp target/aarch64-unknown-linux-gnu/release/vox deploy/bin/
+#
+# Build (from vox repo root):
+#   podman build -f deploy/Containerfile.overnight-reviewer -t overnight-reviewer .
+#
+# Run (oneshot — exits after review):
+#   podman run --rm \
+#     -e VOX_DISCORD_BOT_TOKEN=... \
+#     -e VOX_DISCORD_GUILD_ID=1113581684231778366 \
+#     -v ~/.config/omegon:/config/omegon:ro \
+#     overnight-reviewer \
+#     --agent styrene.overnight-reviewer \
+#     --model openai-codex:gpt-5.4
+#
+# For k8s CronJob: mount secrets via Vault sidecar or external-secrets,
+# pass auth.json as a projected volume.
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Omegon daemon binary
+COPY deploy/bin/omegon /usr/local/bin/omegon
+RUN chmod +x /usr/local/bin/omegon
+
+# Vox extension (discord-enabled)
+RUN mkdir -p /data/omegon/extensions/vox/bin
+COPY deploy/bin/vox /data/omegon/extensions/vox/bin/vox
+RUN chmod +x /data/omegon/extensions/vox/bin/vox
+COPY deploy/manifest.container.toml /data/omegon/extensions/vox/manifest.toml
+
+# Agent catalog — overnight reviewer bundle
+COPY deploy/catalog/styrene.overnight-reviewer/ /data/omegon/catalog/styrene.overnight-reviewer/
+
+# Discord config (generated from env at runtime by entrypoint)
+RUN mkdir -p /root/.config/vox
+
+# Entrypoint (secrets bootstrap + daemon start)
+COPY deploy/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Workspace for git operations (repos mounted or cloned at runtime)
+RUN mkdir -p /workspace
+
+ENV OMEGON_HOME=/data/omegon
+ENV RUST_LOG=info
+
+EXPOSE 7842
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--agent", "styrene.overnight-reviewer", "--model", "openai-codex:gpt-5.4"]

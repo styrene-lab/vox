@@ -1,0 +1,25 @@
+[agent]
+id = "styrene.overnight-reviewer"
+name = "Overnight Code Reviewer"
+version = "1.0.0"
+description = "Scheduled code reviewer that scans target repos overnight and posts 2-3 actionable findings to Discord each morning."
+domain = "coding"
+
+[persona]
+directive = "PERSONA.md"
+badge = "reviewer"
+mind_facts = "mind/facts.jsonl"
+
+[[extensions]]
+name = "vox"
+version = ">=0.3.0"
+
+[settings]
+model = "openai-codex:gpt-5.4"
+thinking_level = "medium"
+context_class = "squad"
+max_turns = 30
+
+[secrets]
+required = []
+optional = ["VOX_DISCORD_BOT_TOKEN"]

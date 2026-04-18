@@ -1,0 +1,4 @@
+[discord]
+require_mention = false
+guild_id = "1113581684231778366"
+operators = []

@@ -1,0 +1,54 @@
+# Unified image for auspex-managed omegon agents.
+# Bundles omegon + vox (all features) + agent catalog.
+# Select agent at runtime: --agent styrene.slack-agent
+#
+# Pre-build (aarch64 for Apple Silicon podman):
+#   cd omegon/core && cargo zigbuild --release --target aarch64-unknown-linux-gnu
+#   cd vox && cargo zigbuild --release --target aarch64-unknown-linux-gnu --features all
+#   mkdir -p deploy/bin
+#   cp ../omegon/core/target/aarch64-unknown-linux-gnu/release/omegon deploy/bin/
+#   cp target/aarch64-unknown-linux-gnu/release/vox deploy/bin/
+#
+# Stage catalog bundles before building:
+#   cp -r ../omegon/catalog/styrene.slack-agent deploy/catalog/
+#   cp -r ../omegon/catalog/styrene.discord-agent deploy/catalog/
+#   cp -r ../omegon/catalog/styrene.coding-agent deploy/catalog/
+#
+# Build (from vox repo root):
+#   podman build -t auspex-agents -f deploy/Containerfile.auspex-local .
+#
+# Run:
+#   podman run -d --name slack-agent -p 7843:7842 \
+#     -e ANTHROPIC_API_KEY -e VOX_SLACK_BOT_TOKEN -e VOX_SLACK_APP_TOKEN \
+#     auspex-agents --agent styrene.slack-agent
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Omegon binary
+COPY deploy/bin/omegon /usr/local/bin/omegon
+RUN chmod +x /usr/local/bin/omegon
+
+# Vox extension
+RUN mkdir -p /data/omegon/extensions/vox/bin
+COPY deploy/bin/vox /data/omegon/extensions/vox/bin/vox
+RUN chmod +x /data/omegon/extensions/vox/bin/vox
+COPY deploy/manifest.container.toml /data/omegon/extensions/vox/manifest.toml
+
+# Agent catalog bundles (staged into deploy/catalog/ before build)
+COPY deploy/catalog/ /data/omegon/catalog/
+
+# Entrypoint (secrets bootstrap + daemon start)
+COPY deploy/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV OMEGON_HOME=/data/omegon
+ENV OMEGON_BIND_ADDR=0.0.0.0
+ENV RUST_LOG=info
+
+EXPOSE 7842
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]

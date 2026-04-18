@@ -1,0 +1,79 @@
+# omegon-agent — deploy any omegon agent as Deployment or CronJob.
+#
+# mode: "daemon" for long-lived bots (discord, slack)
+#        "cronjob" for oneshot reviewers/scanners
+
+mode: cronjob
+
+# CronJob schedule (only used when mode=cronjob)
+schedule: "0 * * * *"
+
+# Restart policy for CronJob pods
+restartPolicy: Never
+
+image:
+  repository: ghcr.io/styrene-lab/omegon-agents
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Agent configuration
+agent:
+  id: styrene.overnight-reviewer
+  model: openai-codex:gpt-5.4
+  extraArgs: []
+
+# Vox connector configuration (generates vox.toml in ConfigMap)
+vox:
+  discord:
+    enabled: false
+    guildId: ""
+    requireMention: false
+    operators: []
+  slack:
+    enabled: false
+    workspace: ""
+    operators: []
+
+# Secret management
+secrets:
+  # "env" — secrets from k8s Secret object
+  # "vault" — HashiCorp Vault Agent sidecar
+  # "external-secrets" — ExternalSecret CRD
+  provider: env
+
+  # k8s Secret name containing keys like ANTHROPIC_API_KEY, VOX_DISCORD_BOT_TOKEN
+  secretName: ""
+
+  # Vault path (when provider=vault)
+  vaultPath: ""
+  vaultRole: ""
+
+  # Mount auth.json from a Secret (for OAuth tokens)
+  authJson:
+    enabled: false
+    secretName: ""
+    key: auth.json
+
+# Resources
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# Service (only for mode=daemon)
+service:
+  port: 7842
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,38 @@
+FROM rust:1.87-bookworm AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev cmake \
+    && apt-get clean \
+    && find /var/lib/apt/lists -type f -delete
+
+WORKDIR /build
+COPY omegon /build/omegon
+COPY vox /build/vox
+
+WORKDIR /build/omegon
+RUN cargo build --release -p omegon
+
+WORKDIR /build/vox
+RUN cargo build --release -p vox --features discord
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git jq \
+    && apt-get clean \
+    && find /var/lib/apt/lists -type f -delete
+
+COPY --from=builder /build/omegon/target/release/omegon /usr/local/bin/omegon
+RUN mkdir -p /data/omegon/extensions/vox/bin
+COPY --from=builder /build/vox/target/release/vox /data/omegon/extensions/vox/bin/vox
+COPY vox/deploy/manifest.container.toml /data/omegon/extensions/vox/manifest.toml
+COPY vox/deploy/catalog/styrene.overnight-reviewer/ /data/omegon/catalog/styrene.overnight-reviewer/
+COPY vox/deploy/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && mkdir -p /root/.config/vox /workspace
+
+ENV OMEGON_HOME=/data/omegon
+ENV RUST_LOG=info
+EXPOSE 7842
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--agent", "styrene.overnight-reviewer", "--model", "openai-codex:gpt-5.4"]
