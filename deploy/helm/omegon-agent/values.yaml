@@ -24,6 +24,9 @@ agent:
   model: openai-codex:gpt-5.4
   extraArgs: []
 
+# Discord channel for review findings (oneshot/cronjob mode)
+reviewChannel: ""
+
 # Vox connector configuration (generates vox.toml in ConfigMap)
 vox:
   discord:

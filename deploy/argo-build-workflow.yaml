@@ -121,10 +121,7 @@ spec:
             cp -r /pvc/vox/deploy/catalog/styrene.overnight-reviewer/* /build-ctx/catalog/
             cp /pvc/vox/deploy/manifest.container.toml /build-ctx/manifest.toml
             cp /pvc/vox/deploy/entrypoint.sh /build-ctx/entrypoint.sh
-
-            echo "=== build context ==="
-            ls -la /build-ctx/
-            ls -la /build-ctx/catalog/
+            cp /pvc/vox/deploy/entrypoint-oneshot.sh /build-ctx/entrypoint-oneshot.sh
 
             printf '%s\n' \
               'FROM debian:trixie-slim' \
@@ -137,12 +134,13 @@ spec:
               'COPY manifest.toml /data/omegon/extensions/vox/manifest.toml' \
               'COPY catalog/ /data/omegon/catalog/styrene.overnight-reviewer/' \
               'COPY entrypoint.sh /entrypoint.sh' \
-              'RUN chmod +x /entrypoint.sh && mkdir -p /root/.config/vox /workspace' \
+              'COPY entrypoint-oneshot.sh /entrypoint-oneshot.sh' \
+              'RUN chmod +x /entrypoint.sh /entrypoint-oneshot.sh && mkdir -p /root/.config/vox /workspace' \
               'ENV OMEGON_HOME=/data/omegon' \
               'ENV RUST_LOG=info' \
               'EXPOSE 7842' \
               'WORKDIR /workspace' \
-              'ENTRYPOINT ["/entrypoint.sh"]' \
+              'ENTRYPOINT ["/entrypoint-oneshot.sh"]' \
               'CMD ["--agent", "styrene.overnight-reviewer", "--model", "openai-codex:gpt-5.4"]' \
               > /build-ctx/Dockerfile
 

@@ -66,6 +66,14 @@ containers:
     env:
       - name: VOX_CONFIG
         value: /root/.config/vox/vox.toml
+      {{- if .Values.vox.discord.enabled }}
+      - name: REVIEW_GUILD
+        value: {{ .Values.vox.discord.guildId | quote }}
+      {{- end }}
+      {{- if .Values.reviewChannel }}
+      - name: REVIEW_CHANNEL
+        value: {{ .Values.reviewChannel | quote }}
+      {{- end }}
     volumeMounts:
       - name: vox-config
         mountPath: /root/.config/vox/vox.toml
