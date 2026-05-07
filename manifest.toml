@@ -16,6 +16,83 @@ timeout_ms = 10000
 enabled = true
 description = "Communication patterns, contact context, and channel preferences"
 
+# ── Configuration ─────────────────────────────────────────────────────────
+# Typed settings declared here are rendered in Flynt's extension config UI
+# and stored in ~/.omegon/extensions/vox/config.toml. Secrets (passwords,
+# tokens) are declared in [secrets] below — not here.
+
+[config.signal_phone]
+type = "string"
+label = "Signal phone number"
+description = "E.164 format, used for Signal registration and messaging"
+required = false
+placeholder = "+15551234567"
+pattern = '^\+[1-9]\d{1,14}$'
+
+[config.signal_data_dir]
+type = "string"
+label = "Signal data directory"
+description = "Where Signal protocol state is stored"
+required = false
+default = "/var/lib/vox/signal"
+placeholder = "/var/lib/vox/signal"
+
+[config.email_imap_host]
+type = "string"
+label = "IMAP server"
+required = false
+placeholder = "imap.example.com"
+
+[config.email_imap_port]
+type = "number"
+label = "IMAP port"
+required = false
+default = "993"
+
+[config.email_smtp_host]
+type = "string"
+label = "SMTP server"
+required = false
+placeholder = "smtp.example.com"
+
+[config.email_smtp_port]
+type = "number"
+label = "SMTP port"
+required = false
+default = "587"
+
+[config.email_address]
+type = "string"
+label = "Email address"
+required = false
+placeholder = "omegon@example.com"
+
+[config.discord_guild_id]
+type = "string"
+label = "Discord guild ID"
+description = "Restrict to a specific server (omit for all guilds)"
+required = false
+placeholder = "123456789"
+
+[config.lxmf_display_name]
+type = "string"
+label = "LXMF display name"
+description = "Identity name on the Reticulum mesh network"
+required = false
+default = "omegon-lab"
+
+[config.voice_stt_engine]
+type = "enum"
+label = "Speech-to-text engine"
+values = ["whisper", "vosk"]
+default = "whisper"
+
+[config.voice_tts_engine]
+type = "enum"
+label = "Text-to-speech engine"
+values = ["piper", "sherpa-onnx"]
+default = "piper"
+
 # Secrets follow omegon's security model:
 #   - Resolved by SecretsManager (keyring, vault, env, shell commands)
 #   - Delivered via bootstrap_secrets RPC over stdio pipe
