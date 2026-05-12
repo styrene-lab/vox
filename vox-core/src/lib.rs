@@ -666,6 +666,16 @@ pub enum SttEngine {
     Moonshine,
 }
 
+impl std::fmt::Display for SttEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Whisper => "whisper",
+            Self::Vosk => "vosk",
+            Self::Moonshine => "moonshine",
+        })
+    }
+}
+
 /// Text-to-speech engine selection.
 ///
 /// Tiered deployment:
@@ -685,6 +695,16 @@ pub enum TtsEngine {
     /// Kokoro via ort — StyleTTS2-based, 82M params.
     /// Highest quality for size. Community ONNX exports.
     Kokoro,
+}
+
+impl std::fmt::Display for TtsEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Piper => "piper",
+            Self::Espeak => "espeak",
+            Self::Kokoro => "kokoro",
+        })
+    }
 }
 
 /// Voice activity detection engine selection.

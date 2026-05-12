@@ -21,16 +21,22 @@ pub struct VoiceConnector {
 
 impl VoiceConnector {
     pub fn new(config: VoiceConfig) -> Self {
-        // Validate model paths exist at init time
+        // Validate model paths exist at init time. tts_model_path is Option:
+        // None is valid for Espeak (no model needed), so treat absence as OK.
         let stt_ok = std::path::Path::new(&config.stt_model_path).exists();
-        let tts_ok = std::path::Path::new(&config.tts_model_path).exists();
+        let tts_ok = match config.tts_model_path.as_deref() {
+            Some(p) => std::path::Path::new(p).exists(),
+            None => true,
+        };
+
+        let tts_model_display = config.tts_model_path.as_deref().unwrap_or("<none>");
 
         let status = if stt_ok && tts_ok {
             tracing::info!(
                 stt_engine = %config.stt_engine,
                 stt_model = %config.stt_model_path,
                 tts_engine = %config.tts_engine,
-                tts_model = %config.tts_model_path,
+                tts_model = tts_model_display,
                 "voice connector initialized (stub)"
             );
             ConnectorStatus::Disconnected
@@ -39,7 +45,7 @@ impl VoiceConnector {
                 tracing::warn!(path = %config.stt_model_path, "STT model not found");
             }
             if !tts_ok {
-                tracing::warn!(path = %config.tts_model_path, "TTS model not found");
+                tracing::warn!(path = tts_model_display, "TTS model not found");
             }
             ConnectorStatus::Degraded
         };
