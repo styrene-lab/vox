@@ -1,6 +1,6 @@
 [extension]
 name = "vox"
-version = "0.1.0"
+version = "0.1.1"
 description = "Unified communication connector for omegon — aggregates email, Signal, Telegram, Slack, Discord, Styrene, Reticulum, and more"
 sdk_version = "0.15"
 
