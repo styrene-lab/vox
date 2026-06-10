@@ -19,4 +19,7 @@ require_mention = true
 operators = []
 # operator_groups = []
 # allowed_users = []
-# default_channel = "C0123456789"
+# Secrets can be provided by omegon bootstrap_secrets or by mounted files.
+# File paths are preferred for Kubernetes/Vault/VSO deployments.
+# oauth_token_file = "/run/omegon/secrets/slack_oauth_token"   # xoxb-...
+# socket_token_file = "/run/omegon/secrets/slack_socket_token" # xapp-...

@@ -104,9 +104,33 @@ pub struct SlackConnector {
 
 impl SlackConnector {
     pub fn new(config: SlackConfig, secrets: &SecretStore) -> Self {
-        let bot_token = secrets.get("VOX_SLACK_BOT_TOKEN");
-        let app_token = secrets.get("VOX_SLACK_APP_TOKEN");
-        let user_token = secrets.get("VOX_SLACK_USER_TOKEN");
+        let bot_token = match secrets
+            .get_or_file("VOX_SLACK_BOT_TOKEN", config.oauth_token_file.as_deref())
+        {
+            Ok(token) => token,
+            Err(e) => {
+                tracing::warn!(error = %e, "slack bot connector degraded — failed to read bot token file");
+                None
+            }
+        };
+        let app_token = match secrets
+            .get_or_file("VOX_SLACK_APP_TOKEN", config.socket_token_file.as_deref())
+        {
+            Ok(token) => token,
+            Err(e) => {
+                tracing::warn!(error = %e, "slack bot connector degraded — failed to read app token file");
+                None
+            }
+        };
+        let user_token = match secrets
+            .get_or_file("VOX_SLACK_USER_TOKEN", config.user_token_file.as_deref())
+        {
+            Ok(token) => token,
+            Err(e) => {
+                tracing::warn!(error = %e, "slack proxy connector degraded — failed to read user token file");
+                None
+            }
+        };
 
         let status = match config.mode {
             SlackMode::Bot => {
@@ -188,8 +212,7 @@ impl SlackConnector {
 
         // Build operator user ID set: explicit IDs + resolved usergroup members
         {
-            let mut op_ids: HashSet<String> =
-                self.config.operators.iter().cloned().collect();
+            let mut op_ids: HashSet<String> = self.config.operators.iter().cloned().collect();
 
             for group_id in &self.config.operator_groups {
                 match self.resolve_usergroup_members(bot_token, group_id).await {
@@ -548,7 +571,9 @@ async fn socket_mode_loop(
                     {
                         let mut s = state.lock().await;
                         if s.inbox.len() >= MAX_INBOX_SIZE {
-                            tracing::warn!("slack inbox full ({MAX_INBOX_SIZE}), dropping oldest message");
+                            tracing::warn!(
+                                "slack inbox full ({MAX_INBOX_SIZE}), dropping oldest message"
+                            );
                             s.inbox.pop_front();
                         }
                         s.inbox.push_back(inbound);
@@ -613,7 +638,10 @@ async fn resolve_user_identity(http: &Client, token: &str) -> Result<String> {
         .map_err(|e| Error::SendFailed(format!("auth.test parse failed: {e}")))?;
 
     if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let err = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         return Err(Error::SendFailed(format!("auth.test error: {err}")));
     }
 
@@ -653,8 +681,13 @@ async fn discover_user_channels(http: &Client, token: &str) -> Result<Vec<String
             .map_err(|e| Error::SendFailed(format!("conversations.list parse failed: {e}")))?;
 
         if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-            let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
-            return Err(Error::SendFailed(format!("conversations.list error: {err}")));
+            let err = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            return Err(Error::SendFailed(format!(
+                "conversations.list error: {err}"
+            )));
         }
 
         if let Some(arr) = body.get("channels").and_then(|v| v.as_array()) {
@@ -689,11 +722,7 @@ async fn fetch_channel_history(
     let resp = http
         .get("https://slack.com/api/conversations.history")
         .bearer_auth(token)
-        .query(&[
-            ("channel", channel),
-            ("oldest", oldest),
-            ("limit", "100"),
-        ])
+        .query(&[("channel", channel), ("oldest", oldest), ("limit", "100")])
         .send()
         .await
         .map_err(|e| format!("conversations.history failed: {e}"))?;
@@ -704,7 +733,10 @@ async fn fetch_channel_history(
         .map_err(|e| format!("conversations.history parse failed: {e}"))?;
 
     if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let err = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         return Err(format!("conversations.history error: {err}"));
     }
 
@@ -740,7 +772,9 @@ async fn proxy_poll_loop(
                     // Initialize cursors for any new channels
                     let now_ts = format!("{}", chrono::Utc::now().timestamp());
                     for ch in &channels {
-                        s.channel_cursors.entry(ch.clone()).or_insert_with(|| now_ts.clone());
+                        s.channel_cursors
+                            .entry(ch.clone())
+                            .or_insert_with(|| now_ts.clone());
                     }
                     s.watched_channels = channels;
                 }
@@ -979,7 +1013,11 @@ impl Connector for SlackConnector {
     fn capabilities(&self) -> ConnectorCapabilities {
         let is_proxy = self.config.mode == SlackMode::Proxy;
         ConnectorCapabilities {
-            send: if is_proxy { self.config.posture == SlackPosture::Participate } else { true },
+            send: if is_proxy {
+                self.config.posture == SlackPosture::Participate
+            } else {
+                true
+            },
             receive: true,
             threads: true,
             reactions: !is_proxy,
@@ -1001,18 +1039,17 @@ impl Connector for SlackConnector {
         }
 
         // Determine target channel
-        let channel_id = match &message.envelope {
-            Envelope::Channel { channel_id, .. } => channel_id.clone(),
-            Envelope::Direct { to } if !to.is_empty() => {
-                // For DMs, the "to" id is the channel ID (Slack DM channel)
-                to[0].id.clone()
-            }
-            _ => self
-                .config
-                .default_channel
-                .clone()
-                .ok_or_else(|| Error::SendFailed("no target channel and no default set".into()))?,
-        };
+        let channel_id =
+            match &message.envelope {
+                Envelope::Channel { channel_id, .. } => channel_id.clone(),
+                Envelope::Direct { to } if !to.is_empty() => {
+                    // For DMs, the "to" id is the channel ID (Slack DM channel)
+                    to[0].id.clone()
+                }
+                _ => self.config.default_channel.clone().ok_or_else(|| {
+                    Error::SendFailed("no target channel and no default set".into())
+                })?,
+            };
 
         // Handle reactions
         if let Some(ref reaction) = message.reaction {
@@ -1039,8 +1076,12 @@ impl Connector for SlackConnector {
 
         // Slack message limit is 40,000 characters — truncate at char boundary
         let text = if text.len() > 40_000 {
-            tracing::warn!(len = text.len(), "truncating message to Slack 40k char limit");
-            let boundary = text.char_indices()
+            tracing::warn!(
+                len = text.len(),
+                "truncating message to Slack 40k char limit"
+            );
+            let boundary = text
+                .char_indices()
                 .take_while(|(i, _)| *i <= 39_980)
                 .last()
                 .map(|(i, c)| i + c.len_utf8())
@@ -1093,6 +1134,9 @@ mod tests {
             watch_channels: vec![],
             proxy_poll_secs: 30,
             channel_refresh_secs: 300,
+            oauth_token_file: None,
+            socket_token_file: None,
+            user_token_file: None,
         }
     }
 
@@ -1118,7 +1162,12 @@ mod tests {
         assert!(msg.is_some());
         let msg = msg.unwrap();
         assert_eq!(msg.sender.id, "U123");
-        assert_eq!(msg.body[0], BodyPart::Text { content: "hello".into() });
+        assert_eq!(
+            msg.body[0],
+            BodyPart::Text {
+                content: "hello".into()
+            }
+        );
     }
 
     #[test]
@@ -1266,7 +1315,9 @@ mod tests {
         let inbound = parse_proxy_message(&msg, &proxy_config(), "OPERATOR1", "C456").unwrap();
         assert_eq!(
             inbound.body[0],
-            BodyPart::Text { content: "hey <@U123> check this".into() }
+            BodyPart::Text {
+                content: "hey <@U123> check this".into()
+            }
         );
     }
 

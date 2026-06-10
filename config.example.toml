@@ -56,15 +56,18 @@
 # user_id = "@bot:example.com"
 
 # --- Slack ---
-# Requires: VOX_SLACK_BOT_TOKEN
-# Feature flag: (not yet implemented)
+# Requires: VOX_SLACK_BOT_TOKEN + VOX_SLACK_APP_TOKEN, or token files.
+# Feature flag: slack
 #
 # [slack]
 # workspace = "my-workspace"
+# oauth_token_file = "/run/omegon/secrets/slack_oauth_token"
+# socket_token_file = "/run/omegon/secrets/slack_socket_token"
 
 # --- Discord ---
-# Requires: VOX_DISCORD_BOT_TOKEN
-# Feature flag: --features discord
+# Requires: VOX_DISCORD_BOT_TOKEN, or bot_token_file.
+# Feature flag: discord
 #
 # [discord]
 # guild_id = "123456789"               # optional, omit for all guilds
+# bot_token_file = "/run/omegon/secrets/discord_bot_token"

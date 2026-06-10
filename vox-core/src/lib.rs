@@ -27,6 +27,9 @@ pub enum Error {
     #[error("not supported: {0}")]
     NotSupported(String),
 
+    #[error("failed to read secret {name} from configured file: {reason}")]
+    SecretRead { name: String, reason: String },
+
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -62,9 +65,7 @@ pub struct Address {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Envelope {
     /// Point-to-point addressing by contact identity (Signal 1:1, generic).
-    Direct {
-        to: Vec<Address>,
-    },
+    Direct { to: Vec<Address> },
     /// Email-style with To/CC/BCC distinction.
     Email {
         to: Vec<Address>,
@@ -74,9 +75,7 @@ pub enum Envelope {
         bcc: Vec<Address>,
     },
     /// Group conversation (Signal groups).
-    Group {
-        group_id: String,
-    },
+    Group { group_id: String },
     /// Workspace + channel (Slack, Discord).
     Channel {
         workspace: String,
@@ -386,7 +385,10 @@ impl ConnectorRegistry {
 fn futures_core_select_all<'a>(
     streams: Vec<Pin<Box<dyn Stream<Item = InboundMessage> + Send + 'a>>>,
 ) -> impl Stream<Item = InboundMessage> + Send + 'a {
-    SelectAll { streams, next_start: 0 }
+    SelectAll {
+        streams,
+        next_start: 0,
+    }
 }
 
 /// A fair select-all stream combinator that rotates the start index
@@ -836,6 +838,20 @@ pub struct SlackConfig {
     /// empty (default: 300). Ignored when watch_channels is explicit.
     #[serde(default = "default_channel_refresh_secs")]
     pub channel_refresh_secs: u64,
+    /// File containing VOX_SLACK_BOT_TOKEN, the Slack Bot User OAuth token
+    /// (`xoxb-*`). Used when the secret was not delivered through
+    /// bootstrap_secrets or the environment.
+    #[serde(default, alias = "bot_token_file")]
+    pub oauth_token_file: Option<std::path::PathBuf>,
+    /// File containing VOX_SLACK_APP_TOKEN, the Slack app-level Socket Mode
+    /// token (`xapp-*`). Used when the secret was not delivered through
+    /// bootstrap_secrets or the environment.
+    #[serde(default, alias = "app_token_file")]
+    pub socket_token_file: Option<std::path::PathBuf>,
+    /// File containing VOX_SLACK_USER_TOKEN for proxy mode. Used when the
+    /// secret was not delivered through bootstrap_secrets or the environment.
+    #[serde(default)]
+    pub user_token_file: Option<std::path::PathBuf>,
 }
 
 fn default_proxy_poll_secs() -> u64 {
@@ -873,6 +889,10 @@ pub struct DiscordConfig {
     /// Roles → right-click → Copy Role ID.
     #[serde(default)]
     pub operator_roles: Vec<String>,
+    /// File containing VOX_DISCORD_BOT_TOKEN. Used when the secret was not
+    /// delivered through bootstrap_secrets or the environment.
+    #[serde(default)]
+    pub bot_token_file: Option<std::path::PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -909,6 +929,29 @@ impl SecretStore {
         store.get(name).map(|s| s.expose_secret().to_string())
     }
 
+    /// Retrieve a secret value from bootstrap_secrets first, then from a
+    /// configured file. File values are trimmed so Kubernetes/Vault/SOPS
+    /// newline-terminated secret files work without leaking the value into logs.
+    pub fn get_or_file(
+        &self,
+        name: &str,
+        path: Option<&std::path::Path>,
+    ) -> Result<Option<String>> {
+        if let Some(value) = self.get(name) {
+            return Ok(Some(value));
+        }
+
+        let Some(path) = path else {
+            return Ok(None);
+        };
+
+        let value = std::fs::read_to_string(path).map_err(|e| Error::SecretRead {
+            name: name.to_string(),
+            reason: e.to_string(),
+        })?;
+        Ok(Some(value.trim().to_string()))
+    }
+
     /// Check if a secret exists without exposing its value.
     pub fn has(&self, name: &str) -> bool {
         self.secrets.read().unwrap().contains_key(name)
@@ -936,10 +979,7 @@ impl Default for SecretStore {
 pub trait ConnectorFactory: Send + Sync {
     /// Build and return a boxed connector, or an error if required
     /// secrets/config are missing.
-    async fn build(
-        config: &Value,
-        secrets: &SecretStore,
-    ) -> Result<Box<dyn Connector>>
+    async fn build(config: &Value, secrets: &SecretStore) -> Result<Box<dyn Connector>>
     where
         Self: Sized;
 }

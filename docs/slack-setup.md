@@ -52,8 +52,18 @@ Copy the **Bot User OAuth Token** (`xoxb-...`).
 
 ## 6. Store Secrets
 
+Preferred production deployments mount token files (Vault/VSO, Kubernetes
+Secrets, SOPS, or another external secret manager):
+
+```toml
+[slack]
+oauth_token_file = "/run/omegon/secrets/slack_oauth_token"   # xoxb-...
+socket_token_file = "/run/omegon/secrets/slack_socket_token" # xapp-...
+```
+
+Local development can still use omegon's keyring:
+
 ```bash
-# Store in omegon's keyring (never in env vars or on disk)
 omegon secret set VOX_SLACK_BOT_TOKEN    # xoxb-...
 omegon secret set VOX_SLACK_APP_TOKEN    # xapp-...
 ```
@@ -65,6 +75,8 @@ omegon secret set VOX_SLACK_APP_TOKEN    # xapp-...
 workspace = "your-workspace-name"
 require_mention = true          # only respond to @mentions in channels
 allowed_users = []              # empty = allow all, or ["U12345", "U67890"]
+oauth_token_file = "/run/omegon/secrets/slack_oauth_token"
+socket_token_file = "/run/omegon/secrets/slack_socket_token"
 # default_channel = "C12345"   # optional fallback channel
 ```
 

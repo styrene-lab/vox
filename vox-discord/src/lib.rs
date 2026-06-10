@@ -155,7 +155,15 @@ pub struct DiscordConnector {
 
 impl DiscordConnector {
     pub fn new(config: DiscordConfig, secrets: &SecretStore) -> Self {
-        let bot_token = secrets.get("VOX_DISCORD_BOT_TOKEN");
+        let bot_token = match secrets
+            .get_or_file("VOX_DISCORD_BOT_TOKEN", config.bot_token_file.as_deref())
+        {
+            Ok(token) => token,
+            Err(e) => {
+                tracing::warn!(error = %e, "discord connector degraded — failed to read bot token file");
+                None
+            }
+        };
 
         let status = if bot_token.is_some() {
             tracing::info!(
@@ -247,12 +255,7 @@ impl DiscordConnector {
         Ok(api_resp.id.unwrap_or_default())
     }
 
-    async fn add_reaction(
-        &self,
-        channel_id: &str,
-        message_id: &str,
-        emoji: &str,
-    ) -> Result<()> {
+    async fn add_reaction(&self, channel_id: &str, message_id: &str, emoji: &str) -> Result<()> {
         let Some(ref token) = self.bot_token else {
             return Err(Error::SendFailed("no bot token".into()));
         };
@@ -301,10 +304,7 @@ async fn gateway_loop(
             }
         };
 
-        tracing::info!(
-            resume = can_resume,
-            "connecting to discord gateway"
-        );
+        tracing::info!(resume = can_resume, "connecting to discord gateway");
 
         let connect_result = tokio_tungstenite::connect_async(&gateway_url).await;
         let (mut ws, _) = match connect_result {
@@ -372,7 +372,9 @@ async fn gateway_loop(
             match payload.op {
                 // Hello — start heartbeating, then resume or identify
                 10 => {
-                    let interval_ms = payload.d.get("heartbeat_interval")
+                    let interval_ms = payload
+                        .d
+                        .get("heartbeat_interval")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(41250);
                     heartbeat_interval = Some(tokio::time::interval(
@@ -383,9 +385,10 @@ async fn gateway_loop(
                         // Attempt Resume if we have a prior session
                         let resume_data = {
                             let s = state.lock().await;
-                            s.session_id.as_ref().zip(s.sequence).map(|(sid, seq)| {
-                                (sid.clone(), seq)
-                            })
+                            s.session_id
+                                .as_ref()
+                                .zip(s.sequence)
+                                .map(|(sid, seq)| (sid.clone(), seq))
                         };
 
                         let payload_json = if let Some((session_id, seq)) = resume_data {
@@ -413,7 +416,10 @@ async fn gateway_loop(
                             })
                         };
 
-                        if let Err(e) = ws.send(WsMessage::Text(payload_json.to_string().into())).await {
+                        if let Err(e) = ws
+                            .send(WsMessage::Text(payload_json.to_string().into()))
+                            .await
+                        {
                             tracing::error!(error = %e, "identify/resume send failed");
                             break;
                         }
@@ -451,11 +457,9 @@ async fn gateway_loop(
                             if let Ok(msg) = serde_json::from_value::<DiscordMessage>(payload.d) {
                                 let bot_id = { state.lock().await.bot_user_id.clone() };
 
-                                if let Some(inbound) = parse_discord_message(
-                                    &msg,
-                                    &config,
-                                    bot_id.as_deref(),
-                                ) {
+                                if let Some(inbound) =
+                                    parse_discord_message(&msg, &config, bot_id.as_deref())
+                                {
                                     let mut s = state.lock().await;
                                     if s.inbox.len() >= MAX_INBOX_SIZE {
                                         tracing::warn!("discord inbox full ({MAX_INBOX_SIZE}), dropping oldest message");
@@ -521,7 +525,11 @@ fn classify_trust(
     // Check guild roles
     if !config.operator_roles.is_empty() {
         if let Some(member) = member {
-            if member.roles.iter().any(|r| config.operator_roles.contains(r)) {
+            if member
+                .roles
+                .iter()
+                .any(|r| config.operator_roles.contains(r))
+            {
                 return vox_core::TrustLevel::Operator;
             }
         }
@@ -548,9 +556,7 @@ fn parse_discord_message(
     }
 
     // Allowlist check
-    if !config.allowed_users.is_empty()
-        && !config.allowed_users.contains(&msg.author.id)
-    {
+    if !config.allowed_users.is_empty() && !config.allowed_users.contains(&msg.author.id) {
         tracing::debug!(user = %msg.author.id, "message from non-allowlisted user, ignoring");
         return None;
     }
@@ -677,11 +683,7 @@ impl Connector for DiscordConnector {
         let channel_id = match &message.envelope {
             Envelope::Channel { channel_id, .. } => channel_id.clone(),
             Envelope::Direct { to } if !to.is_empty() => to[0].id.clone(),
-            _ => {
-                return Err(Error::SendFailed(
-                    "no target channel in envelope".into(),
-                ))
-            }
+            _ => return Err(Error::SendFailed("no target channel in envelope".into())),
         };
 
         // Handle reactions
@@ -709,8 +711,12 @@ impl Connector for DiscordConnector {
 
         // Discord message limit is 2000 characters — truncate at char boundary
         let text = if text.len() > 2000 {
-            tracing::warn!(len = text.len(), "truncating message to Discord 2k char limit");
-            let boundary = text.char_indices()
+            tracing::warn!(
+                len = text.len(),
+                "truncating message to Discord 2k char limit"
+            );
+            let boundary = text
+                .char_indices()
                 .take_while(|(i, _)| *i <= 1980)
                 .last()
                 .map(|(i, c)| i + c.len_utf8())
@@ -755,6 +761,7 @@ mod tests {
             allowed_users: vec![],
             operators: vec![],
             operator_roles: vec![],
+            bot_token_file: None,
         }
     }
 
@@ -780,7 +787,12 @@ mod tests {
         let msg = make_msg("U1", "hello", None);
         let result = parse_discord_message(&msg, &discord_config(), Some("BOT1"));
         assert!(result.is_some());
-        assert_eq!(result.unwrap().body[0], BodyPart::Text { content: "hello".into() });
+        assert_eq!(
+            result.unwrap().body[0],
+            BodyPart::Text {
+                content: "hello".into()
+            }
+        );
     }
 
     #[test]
@@ -795,7 +807,12 @@ mod tests {
         let msg = make_msg("U1", "<@BOT1> hello", Some("G1"));
         let result = parse_discord_message(&msg, &discord_config(), Some("BOT1"));
         assert!(result.is_some());
-        assert_eq!(result.unwrap().body[0], BodyPart::Text { content: "hello".into() });
+        assert_eq!(
+            result.unwrap().body[0],
+            BodyPart::Text {
+                content: "hello".into()
+            }
+        );
     }
 
     #[test]
