@@ -6,7 +6,7 @@ sdk_version = "0.15"
 
 [runtime]
 type = "native"
-binary = "target/release/vox"
+binary = "vox"
 
 [startup]
 ping_method = "get_tools"
