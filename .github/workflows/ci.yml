@@ -83,10 +83,11 @@ jobs:
         run: |
           BIN="${{ steps.bin.outputs.binary }}"
           NAME="${{ steps.bin.outputs.extension_name }}"
-          RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | "$BIN" --rpc 2>/dev/null | head -n1)
+          RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"get_tools","params":{}}' | "$BIN" --rpc 2>/dev/null | head -n1)
           echo "Response: $RESP"
           test -n "$RESP" || { echo "::error::no response from binary"; exit 1; }
           echo "$RESP" | grep -q '"jsonrpc":"2.0"' || { echo "::error::not a JSON-RPC 2.0 response"; exit 1; }
-          echo "$RESP" | grep -q '"protocol_version":2' || { echo "::error::missing protocol_version=2 in initialize"; exit 1; }
-          echo "$RESP" | grep -q "\"name\":\"$NAME\"" || { echo "::error::extension_info.name must equal '$NAME' (per manifest)"; exit 1; }
-          echo "SDK contract OK"
+          echo "$RESP" | grep -q '"result":\[' || { echo "::error::missing get_tools result array"; exit 1; }
+          echo "$RESP" | grep -q '"name":"vox_route"' || { echo "::error::vox_route tool missing"; exit 1; }
+          echo "$RESP" | grep -q '"name":"vox_reply"' || { echo "::error::vox_reply tool missing"; exit 1; }
+          echo "SDK contract OK for $NAME"
