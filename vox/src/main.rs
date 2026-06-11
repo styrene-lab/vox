@@ -290,7 +290,8 @@ impl Vox {
 
     async fn execute_channels(&self) -> omegon_extension::Result<Value> {
         let channels = self.registry.channels();
-        Ok(serde_json::to_value(&channels).unwrap())
+        serde_json::to_value(&channels)
+            .map_err(|e| omegon_extension::Error::internal_error(e.to_string()))
     }
 
     async fn execute_status(&self, params: &Value) -> omegon_extension::Result<Value> {
@@ -337,10 +338,12 @@ impl Vox {
                 .poll()
                 .await
                 .map_err(|e| omegon_extension::Error::internal_error(e.to_string()))?;
-            Ok(serde_json::to_value(&messages).unwrap())
+            serde_json::to_value(&messages)
+                .map_err(|e| omegon_extension::Error::internal_error(e.to_string()))
         } else {
             let messages = self.registry.poll_all().await;
-            Ok(serde_json::to_value(&messages).unwrap())
+            serde_json::to_value(&messages)
+                .map_err(|e| omegon_extension::Error::internal_error(e.to_string()))
         }
     }
 
