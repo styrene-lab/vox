@@ -8,6 +8,9 @@ sdk_version = "0.15"
 type = "native"
 binary = "vox"
 
+[runtime.config]
+vox_config_path = "/config/vox/vox.toml"
+
 [startup]
 ping_method = "get_tools"
 timeout_ms = 10000

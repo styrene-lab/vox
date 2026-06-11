@@ -14,34 +14,71 @@ struct Vox {
     registry: ConnectorRegistry,
     secrets: Arc<SecretStore>,
     config: VoxConfig,
+    config_is_default: bool,
 }
 
 impl Vox {
     fn new() -> Self {
-        // Load config from well-known path or default.
-        // In OCI mode: /etc/vox/vox.toml (baked into image)
-        // In native mode: ~/.config/vox/vox.toml or $VOX_CONFIG
-        let config_path = std::env::var("VOX_CONFIG")
+        Self {
+            registry: ConnectorRegistry::new(),
+            secrets: Arc::new(SecretStore::new()),
+            config: VoxConfig::default(),
+            config_is_default: true,
+        }
+    }
+
+    fn legacy_config_path() -> PathBuf {
+        std::env::var("VOX_CONFIG")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 dirs::config_dir()
                     .unwrap_or_else(|| PathBuf::from("/etc/vox"))
                     .join("vox")
                     .join("vox.toml")
-            });
+            })
+    }
 
-        let config = VoxConfig::load(&config_path).unwrap_or_else(|e| {
+    fn load_legacy_config(&mut self) {
+        let config_path = Self::legacy_config_path();
+        self.config = VoxConfig::load(&config_path).unwrap_or_else(|e| {
             tracing::warn!(path = %config_path.display(), error = %e, "failed to load config, using defaults");
             VoxConfig::default()
         });
-
+        self.config_is_default = false;
         tracing::info!(config = %config_path.display(), "vox config loaded");
+    }
 
-        Self {
-            registry: ConnectorRegistry::new(),
-            secrets: Arc::new(SecretStore::new()),
-            config,
+    fn handle_bootstrap_config(&mut self, params: &Value) -> omegon_extension::Result<Value> {
+        if let Some(config) = params.get("vox_config").or_else(|| params.get("config")) {
+            self.config = serde_json::from_value(config.clone()).map_err(|error| {
+                omegon_extension::Error::invalid_params(format!(
+                    "invalid vox_config bootstrap payload: {error}"
+                ))
+            })?;
+            self.config_is_default = false;
+            tracing::info!("vox config loaded from bootstrap_config payload");
+            return Ok(json!({ "status": "ok", "source": "bootstrap_config" }));
         }
+
+        if let Some(path) = params
+            .get("vox_config_path")
+            .or_else(|| params.get("config_path"))
+            .and_then(Value::as_str)
+        {
+            let config_path = PathBuf::from(path);
+            self.config = VoxConfig::load(&config_path).map_err(|error| {
+                omegon_extension::Error::invalid_params(format!(
+                    "failed to load vox_config_path '{}': {error}",
+                    config_path.display()
+                ))
+            })?;
+            self.config_is_default = false;
+            tracing::info!(config = %config_path.display(), "vox config loaded from bootstrap_config path");
+            return Ok(json!({ "status": "ok", "source": "bootstrap_config_path" }));
+        }
+
+        self.load_legacy_config();
+        Ok(json!({ "status": "ok", "source": "legacy" }))
     }
 
     /// Initialize connectors based on config + available secrets.
@@ -333,7 +370,9 @@ impl Vox {
                 .cloned()
                 .ok_or_else(|| omegon_extension::Error::invalid_params("missing reply_address"))?,
         )
-        .map_err(|e| omegon_extension::Error::invalid_params(format!("invalid reply_address: {e}")))?;
+        .map_err(|e| {
+            omegon_extension::Error::invalid_params(format!("invalid reply_address: {e}"))
+        })?;
 
         let text = params
             .get("text")
@@ -341,15 +380,12 @@ impl Vox {
             .ok_or_else(|| omegon_extension::Error::invalid_params("missing text"))?;
 
         let outbound = reply_addr.text_reply(text.to_string());
-        let connector = self
-            .registry
-            .get(&outbound.channel)
-            .ok_or_else(|| {
-                omegon_extension::Error::invalid_params(format!(
-                    "no connector for channel '{}'",
-                    outbound.channel
-                ))
-            })?;
+        let connector = self.registry.get(&outbound.channel).ok_or_else(|| {
+            omegon_extension::Error::invalid_params(format!(
+                "no connector for channel '{}'",
+                outbound.channel
+            ))
+        })?;
 
         let id = connector.send(outbound).await.map_err(|e| match e {
             VoxError::NotSupported(m) => {
@@ -374,7 +410,10 @@ impl Vox {
         }
     }
 
-    async fn handle_bootstrap_secrets(&mut self, params: &Value) -> omegon_extension::Result<Value> {
+    async fn handle_bootstrap_secrets(
+        &mut self,
+        params: &Value,
+    ) -> omegon_extension::Result<Value> {
         let pairs: HashMap<String, String> = if let Some(obj) = params.as_object() {
             obj.iter()
                 .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
@@ -465,7 +504,15 @@ async fn serve_vox(mut vox: Vox) -> omegon_extension::Result<()> {
 
         match msg {
             RpcMessage::Request(req) => {
-                let response = if req.method == "bootstrap_secrets" {
+                let response = if req.method == "bootstrap_config" {
+                    match vox.handle_bootstrap_config(&req.params) {
+                        Ok(value) => RpcResponse::success(req.id.clone(), value),
+                        Err(e) => RpcResponse::error(req.id.clone(), e.code(), e.message()),
+                    }
+                } else if req.method == "bootstrap_secrets" {
+                    if vox.config_is_default {
+                        vox.load_legacy_config();
+                    }
                     match vox.handle_bootstrap_secrets(&req.params).await {
                         Ok(value) => RpcResponse::success(req.id.clone(), value),
                         Err(e) => RpcResponse::error(req.id.clone(), e.code(), e.message()),
@@ -775,7 +822,6 @@ struct Cli {
     /// Preferred over environment variables. File permissions are checked.
     #[arg(long)]
     secrets_file: Option<PathBuf>,
-
 }
 
 // ---------------------------------------------------------------------------
