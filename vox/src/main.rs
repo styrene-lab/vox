@@ -98,12 +98,10 @@ impl Vox {
             tracing::info!("email connector registered");
         }
 
-        #[cfg(feature = "lxmf")]
-        if let Some(ref cfg) = self.config.lxmf {
-            let connector = vox_lxmf::LxmfConnector::new(cfg.clone(), &self.secrets);
-            self.registry.register(Box::new(connector));
-            tracing::info!("lxmf connector registered");
-        }
+        // LXMF is intentionally not compiled yet: vox-lxmf depends on styrene-rs
+        // crates that are not published to crates.io. Keep parsing lxmf config in
+        // vox-core, but do not reference the connector crate until the Cargo
+        // feature is restored.
 
         #[cfg(feature = "voice")]
         if let Some(ref cfg) = self.config.voice {
