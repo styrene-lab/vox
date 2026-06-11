@@ -1,6 +1,6 @@
 [package]
 name = "vox-lxmf"
-version = "0.1.1"
+version = "0.1.4"
 edition = "2021"
 description = "LXMF/Reticulum connector for vox — built on styrene-rs"
 
