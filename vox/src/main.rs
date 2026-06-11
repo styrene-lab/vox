@@ -621,11 +621,17 @@ fn spawn_shutdown_handler(cancel: tokio_util::sync::CancellationToken) {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {},
-                _ = sigterm.recv() => {},
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {},
+                        _ = sigterm.recv() => {},
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "failed to register SIGTERM handler; falling back to Ctrl-C only");
+                    let _ = tokio::signal::ctrl_c().await;
+                }
             }
         }
         #[cfg(not(unix))]
