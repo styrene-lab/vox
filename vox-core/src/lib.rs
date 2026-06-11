@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::RwLock;
 
@@ -945,6 +946,8 @@ impl SecretStore {
             return Ok(None);
         };
 
+        validate_secret_file_permissions(name, path)?;
+
         let value = std::fs::read_to_string(path).map_err(|e| Error::SecretRead {
             name: name.to_string(),
             reason: e.to_string(),
@@ -969,6 +972,33 @@ impl Default for SecretStore {
     }
 }
 
+#[cfg(unix)]
+fn validate_secret_file_permissions(name: &str, path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::metadata(path).map_err(|e| Error::SecretRead {
+        name: name.to_string(),
+        reason: e.to_string(),
+    })?;
+    let mode = metadata.permissions().mode();
+    if mode & 0o077 != 0 {
+        return Err(Error::SecretRead {
+            name: name.to_string(),
+            reason: format!(
+                "secret file {} is readable, writable, or executable by group/others (mode {:o})",
+                path.display(),
+                mode & 0o777
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_secret_file_permissions(_name: &str, _path: &Path) -> Result<()> {
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Connector factory
 // ---------------------------------------------------------------------------
@@ -982,4 +1012,56 @@ pub trait ConnectorFactory: Send + Sync {
     async fn build(config: &Value, secrets: &SecretStore) -> Result<Box<dyn Connector>>
     where
         Self: Sized;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_path(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("vox-core-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn get_or_file_trims_secret_file_value() {
+        let path = unique_test_path("trim");
+        std::fs::write(&path, "secret-value\n").expect("write secret test file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("restrict secret test file");
+        }
+
+        let store = SecretStore::new();
+        let value = store
+            .get_or_file("VOX_TEST_SECRET", Some(&path))
+            .expect("secret file should load");
+
+        assert_eq!(value.as_deref(), Some("secret-value"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_or_file_rejects_group_readable_secret_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = unique_test_path("perms");
+        std::fs::write(&path, "secret-value\n").expect("write secret test file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
+            .expect("make secret test file group-readable");
+
+        let store = SecretStore::new();
+        let err = store
+            .get_or_file("VOX_TEST_SECRET", Some(&path))
+            .expect_err("group-readable secret files must be rejected");
+
+        assert!(err.to_string().contains("group/others"));
+        let _ = std::fs::remove_file(path);
+    }
 }
