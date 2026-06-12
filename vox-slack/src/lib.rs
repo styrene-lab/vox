@@ -8,7 +8,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tracing;
 use vox_core::{
     Address, BodyPart, ChannelHints, Connector, ConnectorCapabilities, ConnectorFactory,
     ConnectorStatus, Envelope, Error, InboundMessage, MessageId, OutboundMessage, Result,
@@ -143,8 +142,8 @@ impl SlackConnector {
                     ConnectorStatus::Initializing
                 } else {
                     let missing: Vec<&str> = [
-                        (!bot_token.is_some()).then_some("VOX_SLACK_BOT_TOKEN"),
-                        (!app_token.is_some()).then_some("VOX_SLACK_APP_TOKEN"),
+                        bot_token.is_none().then_some("VOX_SLACK_BOT_TOKEN"),
+                        app_token.is_none().then_some("VOX_SLACK_APP_TOKEN"),
                     ]
                     .into_iter()
                     .flatten()
