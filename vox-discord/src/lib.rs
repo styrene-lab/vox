@@ -765,6 +765,27 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn group_readable_secret_file(name: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("vox-discord-{name}-{}-{nanos}", std::process::id()));
+        std::fs::write(
+            &path,
+            "secret-value
+",
+        )
+        .expect("write secret test file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
+            .expect("make secret test file group-readable");
+        path
+    }
+
     fn make_msg(author_id: &str, content: &str, guild: Option<&str>) -> DiscordMessage {
         DiscordMessage {
             id: "msg1".into(),
@@ -780,6 +801,19 @@ mod tests {
             message_reference: None,
             member: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connector_degrades_when_token_file_is_too_permissive() {
+        let bot_token_file = group_readable_secret_file("bot-token");
+        let mut config = discord_config();
+        config.bot_token_file = Some(bot_token_file.clone());
+
+        let connector = DiscordConnector::new(config, &SecretStore::new());
+
+        assert_eq!(connector.status(), ConnectorStatus::Degraded);
+        let _ = std::fs::remove_file(bot_token_file);
     }
 
     #[test]
