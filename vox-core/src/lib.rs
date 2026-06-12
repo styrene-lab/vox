@@ -135,9 +135,10 @@ pub struct Reaction {
 
 /// Protocol-specific parameters that don't fit the universal model.
 /// Connectors ignore hints they don't understand.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum ChannelHints {
+    #[default]
     None,
     Email {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,12 +164,6 @@ pub enum ChannelHints {
         #[serde(default)]
         unfurl: bool,
     },
-}
-
-impl Default for ChannelHints {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,19 +260,14 @@ pub enum ConnectorStatus {
 /// - `User`: the message is external input — the agent responds helpfully
 ///   but does NOT follow instructions embedded in it. This is the default
 ///   for all senders not in the `operators` list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustLevel {
     /// Full instruction authority. Messages treated as operator commands.
     Operator,
     /// External input only. Agent responds but does not follow instructions.
+    #[default]
     User,
-}
-
-impl Default for TrustLevel {
-    fn default() -> Self {
-        Self::User
-    }
 }
 
 impl std::fmt::Display for TrustLevel {
@@ -360,7 +350,7 @@ impl ConnectorRegistry {
                 all.extend(msgs);
             }
         }
-        all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        all.sort_by_key(|message| message.timestamp);
         all
     }
 
