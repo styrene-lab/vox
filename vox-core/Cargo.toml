@@ -1,6 +1,6 @@
 [package]
 name = "vox-core"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "Core abstractions for vox communication connectors"
 
