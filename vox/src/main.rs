@@ -839,11 +839,17 @@ struct Cli {
 async fn main() {
     use clap::Parser;
 
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
+    let env_filter = match "vox=info".parse() {
+        Ok(directive) => env_filter.add_directive(directive),
+        Err(error) => {
+            eprintln!("failed to install default vox log directive: {error}");
+            env_filter
+        }
+    };
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("vox=info".parse().unwrap()),
-        )
+        .with_env_filter(env_filter)
         .with_writer(std::io::stderr)
         .init();
 
@@ -878,6 +884,9 @@ async fn main() {
     } else {
         // Extension mode (default): JSON-RPC over stdio
         let vox = Vox::new();
-        serve_vox(vox).await.expect("vox extension loop failed");
+        if let Err(error) = serve_vox(vox).await {
+            tracing::error!(%error, "vox extension loop failed");
+            std::process::exit(1);
+        }
     }
 }
