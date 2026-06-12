@@ -917,7 +917,9 @@ impl SecretStore {
     /// Clears any previously stored secrets before inserting new ones
     /// to prevent stale secrets from persisting across restarts.
     pub fn bootstrap(&self, pairs: HashMap<String, String>) {
-        let mut store = self.secrets.write().unwrap();
+        let Ok(mut store) = self.secrets.write() else {
+            return;
+        };
         store.clear();
         for (name, value) in pairs {
             store.insert(name, SecretString::from(value));
@@ -926,7 +928,9 @@ impl SecretStore {
 
     /// Retrieve a secret value. Caller is responsible for not logging it.
     pub fn get(&self, name: &str) -> Option<String> {
-        let store = self.secrets.read().unwrap();
+        let Ok(store) = self.secrets.read() else {
+            return None;
+        };
         store.get(name).map(|s| s.expose_secret().to_string())
     }
 
@@ -957,12 +961,18 @@ impl SecretStore {
 
     /// Check if a secret exists without exposing its value.
     pub fn has(&self, name: &str) -> bool {
-        self.secrets.read().unwrap().contains_key(name)
+        let Ok(store) = self.secrets.read() else {
+            return false;
+        };
+        store.contains_key(name)
     }
 
     /// List secret names (never values).
     pub fn names(&self) -> Vec<String> {
-        self.secrets.read().unwrap().keys().cloned().collect()
+        let Ok(store) = self.secrets.read() else {
+            return Vec::new();
+        };
+        store.keys().cloned().collect()
     }
 }
 
