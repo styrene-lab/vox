@@ -7,6 +7,7 @@ metadata:
     {{- include "omegon-agent.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.schedule | quote }}
+  timeZone: Etc/UTC
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
